@@ -2,6 +2,7 @@ require("dotenv").config();
 const crypto = require("crypto");
 const { AsyncLocalStorage } = require("async_hooks");
 const express = require("express");
+const historial = require("./store");
 
 const {
   WHATSAPP_TOKEN,
@@ -36,7 +37,10 @@ app.use(
 /*  Envio de mensajes                                                  */
 /* ------------------------------------------------------------------ */
 
-async function sendMessage(payload) {
+// Envia y devuelve { ok, id, error }. Guarda en el historial quien lo envio
+// (origen: "bot" por defecto, "panel" o "claude" segun el contexto).
+async function sendMessageDetallado(payload) {
+  const store = contexto.getStore() || {};
   const res = await fetch(apiUrl(), {
     method: "POST",
     headers: {
@@ -46,11 +50,17 @@ async function sendMessage(payload) {
     body: JSON.stringify({ messaging_product: "whatsapp", ...payload }),
   });
   if (!res.ok) {
-    console.error("Error enviando mensaje:", res.status, await res.text());
-    return false;
+    const error = await res.text();
+    console.error("Error enviando mensaje:", res.status, error);
+    return { ok: false, error };
   }
-  return true;
+  const data = await res.json().catch(() => ({}));
+  const id = data?.messages?.[0]?.id;
+  historial.registrarSaliente(payload, id, store.origen || "bot", store.phoneId || PHONE_NUMBER_ID);
+  return { ok: true, id };
 }
+
+const sendMessage = async (payload) => (await sendMessageDetallado(payload)).ok;
 
 const sendText = (to, text) =>
   sendMessage({ to, type: "text", text: { body: text } });
@@ -933,6 +943,11 @@ async function pasarAAsesor(from, motivo) {
   console.log(
     `ASESOR: cliente ${from} | ${motivo} | servicio: ${NOMBRE_SERVICIO[s.servicio] || "-"} | vehiculo: ${s.vehiculo || "-"}`
   );
+  historial.marcarAsesor(
+    from,
+    true,
+    `${motivo} | servicio: ${NOMBRE_SERVICIO[s.servicio] || "-"} | vehiculo: ${s.vehiculo || "-"}`
+  );
   setSession(from, { estado: "listo" });
   await sendText(
     from,
@@ -1236,22 +1251,39 @@ app.post("/webhook", (req, res) => {
   res.sendStatus(200);
 
   try {
-    const value = req.body?.entry?.[0]?.changes?.[0]?.value;
-    const messages = value?.messages;
-    if (!messages) {
-      console.log(
-        "Evento sin mensajes (estado de entrega u otro):",
-        JSON.stringify(value?.statuses?.[0]?.status || "otro")
-      );
-      return; // puede ser un estado de entrega (enviado, leido...)
-    }
+    for (const entry of req.body?.entry || []) {
+      for (const change of entry.changes || []) {
+        const value = change.value || {};
+        const phoneId = value.metadata?.phone_number_id;
 
-    const phoneId = value?.metadata?.phone_number_id;
-    for (const message of messages) {
-      console.log("Mensaje recibido de", message.from, "tipo:", message.type);
-      contexto.run({ phoneId }, () =>
-        handleIncoming(message).catch((e) => console.error("Error manejando mensaje:", e))
-      );
+        // Lo que respondiste desde la app WhatsApp Business del celular (coexistencia).
+        // Solo se guarda en el historial: el bot NO debe contestarle a esto.
+        if (change.field === "smb_message_echoes") {
+          for (const eco of value.message_echoes || []) historial.registrarEco(eco, { phone_id: phoneId });
+          continue;
+        }
+
+        // Estados de entrega (enviado, entregado, leido, fallido)
+        for (const st of value.statuses || []) {
+          historial.actualizarEstado(st.id, st.status);
+          if (st.status === "failed") console.error("Mensaje fallido:", JSON.stringify(st.errors || st));
+        }
+
+        const messages = value.messages;
+        if (!messages) {
+          if (!value.statuses) console.log("Evento sin mensajes:", change.field || "otro");
+          continue;
+        }
+
+        const nombres = Object.fromEntries((value.contacts || []).map((c) => [c.wa_id, c.profile?.name]));
+        for (const message of messages) {
+          console.log("Mensaje recibido de", message.from, "tipo:", message.type);
+          historial.registrarEntrante(message, { nombre: nombres[message.from], phone_id: phoneId });
+          contexto.run({ phoneId }, () =>
+            handleIncoming(message).catch((e) => console.error("Error manejando mensaje:", e))
+          );
+        }
+      }
     }
   } catch (e) {
     console.error("Error procesando webhook:", e);
@@ -1516,10 +1548,35 @@ app.post("/conectar/finalizar", async (req, res) => {
   }
 });
 
+/* ------------------------------------------------------------------ */
+/*  Panel de conversaciones (/panel) y MCP para Claude (/mcp)          */
+/* ------------------------------------------------------------------ */
+
+// Envia un texto libre desde el panel o desde Claude, por el numero que atiende a ese cliente
+async function enviarManual(to, texto, origen) {
+  const c = await historial.contacto(to);
+  // Meta solo permite texto libre dentro de las 24 h siguientes al ultimo mensaje del cliente
+  if (!historial.ventanaAbierta(c)) {
+    return {
+      ok: false,
+      error: c
+        ? "Pasaron más de 24 h desde el último mensaje de este cliente. Meta solo permite escribirle con una plantilla aprobada."
+        : "Este número no le ha escrito al bot. Meta solo permite iniciar la conversación con una plantilla aprobada.",
+    };
+  }
+  const phoneId = c?.phone_id || PHONE_NUMBER_ID;
+  return contexto.run({ phoneId, origen }, () =>
+    sendMessageDetallado({ to, type: "text", text: { preview_url: true, body: texto } })
+  );
+}
+
+require("./panel")(app, { historial, enviarManual, adminOk, negocio: NEGOCIO });
+require("./mcp")(app, { historial, enviarManual, negocio: NEGOCIO });
+
 app.get("/", (_req, res) => res.send("Bot de WhatsApp funcionando ✅"));
 
 if (require.main === module) {
   app.listen(PORT, () => console.log(`Servidor escuchando en el puerto ${PORT}`));
 }
 
-module.exports = { handleIncoming, sessions };
+module.exports = { app, handleIncoming, sessions };

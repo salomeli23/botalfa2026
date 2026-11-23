@@ -31,6 +31,10 @@
   .c .n small { margin-left:auto; font-weight:400; color:var(--muted); white-space:nowrap }
   .c .u { color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
   .badge { font-size:11px; padding:1px 7px; border-radius:999px; background:var(--alert); color:#fff; font-weight:600 }
+  .badge.humano { background:var(--botc) }
+  button.detener { border-color:var(--alert); color:var(--alert); font-weight:600 }
+  button.reactivar { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600 }
+  #aviso.humano { background:var(--bot); color:var(--botc) }
   section { display:flex; flex-direction:column; min-height:0 }
   #cab { padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; min-height:52px }
   #cab .t { font-weight:600 } #cab small { color:var(--muted) }
@@ -86,6 +90,7 @@
     <div class="filtros">
       <input type="search" id="buscar" placeholder="Buscar por nombre o número…" />
       <label><input type="checkbox" id="pend" /> Solo los que pidieron asesor</label>
+      <label><input type="checkbox" id="humano" /> Solo en modo humano (bot detenido)</label>
       <div id="filtroEtq"></div>
     </div>
     <div id="lista"></div>
@@ -166,11 +171,12 @@ async function cargarEtiquetas() {
 }
 
 async function cargarLista() {
-  const p = new URLSearchParams({ buscar: $("#buscar").value.trim(), pendientes: $("#pend").checked ? "1" : "", etiqueta: etiquetaFiltro });
+  const p = new URLSearchParams({ buscar: $("#buscar").value.trim(), pendientes: $("#pend").checked ? "1" : "",
+    humano: $("#humano").checked ? "1" : "", etiqueta: etiquetaFiltro });
   contactos = await api("/panel/api/contactos?" + p);
   $("#lista").innerHTML = contactos.map((c) => `
     <div class="c ${c.wa_id === actual ? "act" : ""}" data-id="${esc(c.wa_id)}">
-      <div class="n">${esc(nombre(c))} ${c.pendiente_asesor ? '<span class="badge">asesor</span>' : ""}<small>${c.ultimo_ts ? hora(c.ultimo_ts) : ""}</small></div>
+      <div class="n">${esc(nombre(c))} ${c.pendiente_asesor ? '<span class="badge">asesor</span>' : ""}${c.bot_pausado ? '<span class="badge humano" title="Bot detenido">👤 humano</span>' : ""}<small>${c.ultimo_ts ? hora(c.ultimo_ts) : ""}</small></div>
       <div class="u">${esc(c.ultimo_texto)}</div>
       ${c.etiquetas?.length ? `<div class="tags">${c.etiquetas.map((e) => chip(e)).join("")}</div>` : ""}
     </div>`).join("") || `<div class="vacio">${etiquetaFiltro ? `Ningún cliente con la etiqueta "${esc(etiquetaFiltro)}".` : "Aún no hay conversaciones.<br>Aparecerán cuando alguien le escriba al bot."}</div>`;
@@ -208,11 +214,16 @@ async function cargarConversacion() {
     <button id="volver" title="Volver" style="padding:4px 10px">←</button>
     <div><div class="t">${esc(nombre(c || { wa_id: actual }))}</div><small>+${esc(actual)}</small></div>
     <span class="sp"></span>
+    ${c?.bot_pausado
+      ? '<button id="botToggle" class="reactivar" title="El bot vuelve a responder automáticamente">▶ Reactivar bot</button>'
+      : '<button id="botToggle" class="detener" title="El bot deja de responder a este cliente; lo atiendes tú">⏸ Detener bot</button>'}
     ${c?.pendiente_asesor ? '<button id="atendido">✅ Marcar atendido</button>' : '<button id="marcar">🙋 Marcar pendiente</button>'}`;
   etiquetasActual = c?.etiquetas || [];
   $("#etqBar").hidden = false;
   pintarEtiquetasActual();
   const aviso = [];
+  if (c?.bot_pausado) aviso.push("👤 Modo humano: el bot está detenido para este cliente. Sus mensajes llegan aquí y a tu celular, y respondes tú.");
+  $("#aviso").classList.toggle("humano", !!c?.bot_pausado && !c?.pendiente_asesor && !!c?.ventana_abierta);
   if (c?.pendiente_asesor) aviso.push(`🙋 Pidió asesor: ${c.motivo_asesor || ""}`);
   if (!c?.ventana_abierta) aviso.push("⏰ Pasaron más de 24 h desde su último mensaje: Meta solo permite escribirle con una plantilla aprobada.");
   $("#aviso").hidden = !aviso.length;
@@ -228,6 +239,13 @@ async function cargarConversacion() {
 $("#lista").addEventListener("click", (e) => { const el = e.target.closest(".c"); if (el) abrir(el.dataset.id); });
 $("#cab").addEventListener("click", async (e) => {
   if (e.target.id === "volver") { actual = null; $("#izq").classList.remove("oculto"); $("#der").classList.add("oculto"); }
+  if (e.target.id === "botToggle") {
+    const detener = e.target.classList.contains("detener");
+    e.target.disabled = true;
+    try { await api("/panel/api/bot", { method: "POST", body: JSON.stringify({ wa_id: actual, pausado: detener }) }); }
+    catch (err) { alert(err.message); }
+    cargarConversacion(); cargarLista();
+  }
   if (e.target.id === "atendido" || e.target.id === "marcar") {
     await api("/panel/api/atendido", { method: "POST", body: JSON.stringify({ wa_id: actual, pendiente: e.target.id === "marcar" }) });
     cargarConversacion(); cargarLista();
@@ -256,6 +274,7 @@ $("#etqNueva").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.p
 $("#etqNueva").addEventListener("change", () => { if ($("#etqNueva").value.trim()) agregarEtiqueta(); });
 $("#buscar").addEventListener("input", programarLista);
 $("#pend").addEventListener("change", cargarLista);
+$("#humano").addEventListener("change", cargarLista);
 $("#texto").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#env").requestSubmit(); } });
 $("#env").addEventListener("submit", async (e) => {
   e.preventDefault();

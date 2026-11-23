@@ -94,7 +94,9 @@ function crearPostgres(url) {
           estado TEXT,
           orden BIGSERIAL
         );
-        CREATE INDEX IF NOT EXISTS wa_mensajes_contacto_ts ON wa_mensajes (wa_id, ts);`);
+        CREATE INDEX IF NOT EXISTS wa_mensajes_contacto_ts ON wa_mensajes (wa_id, ts);
+        ALTER TABLE wa_contactos ADD COLUMN IF NOT EXISTS etiquetas TEXT[] NOT NULL DEFAULT '{}';
+        CREATE INDEX IF NOT EXISTS wa_contactos_etiquetas ON wa_contactos USING GIN (etiquetas);`);
     },
     async guardarMensaje(m) {
       const rows = await q(
@@ -131,12 +133,24 @@ function crearPostgres(url) {
       );
       return rows[0];
     },
+    async ponerEtiquetas(wa_id, etiquetas) {
+      const rows = await q(
+        `INSERT INTO wa_contactos (wa_id, etiquetas) VALUES ($1,$2)
+         ON CONFLICT (wa_id) DO UPDATE SET etiquetas = $2 RETURNING *`,
+        [wa_id, etiquetas]
+      );
+      return rows[0];
+    },
+    listarEtiquetas: () =>
+      q(`SELECT e AS nombre, COUNT(*)::int AS clientes FROM wa_contactos, unnest(etiquetas) AS e
+         GROUP BY e ORDER BY clientes DESC, e`),
     contacto: (wa_id) => q(`SELECT * FROM wa_contactos WHERE wa_id = $1`, [wa_id]).then((r) => r[0] || null),
-    listarContactos({ buscar, pendientes, limite = 50 } = {}) {
+    listarContactos({ buscar, pendientes, etiqueta, limite = 50 } = {}) {
       const cond = [];
       const params = [];
       if (buscar) { params.push(`%${buscar}%`); cond.push(`(nombre ILIKE $${params.length} OR wa_id LIKE $${params.length})`); }
       if (pendientes) cond.push(`pendiente_asesor`);
+      if (etiqueta) { params.push(etiqueta); cond.push(`$${params.length} = ANY(etiquetas)`); }
       params.push(limite);
       return q(
         `SELECT * FROM wa_contactos ${cond.length ? "WHERE " + cond.join(" AND ") : ""}
@@ -171,7 +185,7 @@ function crearMemoria() {
 
   const base = (wa_id) => contactos.get(wa_id) || {
     wa_id, nombre: null, phone_id: null, ultimo_ts: 0, ultimo_texto: null,
-    ultimo_entrante_ts: 0, pendiente_asesor: false, motivo_asesor: null,
+    ultimo_entrante_ts: 0, pendiente_asesor: false, motivo_asesor: null, etiquetas: [],
   };
 
   return {
@@ -205,11 +219,24 @@ function crearMemoria() {
       contactos.set(wa_id, x);
       return x;
     },
+    async ponerEtiquetas(wa_id, etiquetas) {
+      const x = base(wa_id);
+      x.etiquetas = etiquetas;
+      contactos.set(wa_id, x);
+      return x;
+    },
+    async listarEtiquetas() {
+      const cuenta = new Map();
+      for (const c of contactos.values()) for (const e of c.etiquetas || []) cuenta.set(e, (cuenta.get(e) || 0) + 1);
+      return [...cuenta].map(([nombre, clientes]) => ({ nombre, clientes }))
+        .sort((a, z) => z.clientes - a.clientes || a.nombre.localeCompare(z.nombre));
+    },
     contacto: async (wa_id) => contactos.get(wa_id) || null,
-    async listarContactos({ buscar, pendientes, limite = 50 } = {}) {
+    async listarContactos({ buscar, pendientes, etiqueta, limite = 50 } = {}) {
       const b = (buscar || "").toLowerCase();
       return [...contactos.values()]
         .filter((c) => !pendientes || c.pendiente_asesor)
+        .filter((c) => !etiqueta || (c.etiquetas || []).includes(etiqueta))
         .filter((c) => !b || c.wa_id.includes(b) || (c.nombre || "").toLowerCase().includes(b))
         .sort((a, z) => (z.pendiente_asesor - a.pendiente_asesor) || (z.ultimo_ts - a.ultimo_ts))
         .slice(0, limite);
@@ -234,6 +261,21 @@ function crearMemoria() {
 /* ------------------------------------------------------------------ */
 /*  API pública                                                         */
 /* ------------------------------------------------------------------ */
+
+// Limpia una lista de etiquetas: sin espacios sobrantes, sin repetidas (sin importar mayúsculas),
+// máximo 30 caracteres cada una y 15 por cliente
+function normalizarEtiquetas(lista) {
+  const vistas = new Set();
+  const out = [];
+  for (const raw of Array.isArray(lista) ? lista : []) {
+    const e = String(raw || "").replace(/\s+/g, " ").trim().slice(0, 30);
+    const k = e.toLowerCase();
+    if (!e || vistas.has(k)) continue;
+    vistas.add(k);
+    out.push(e);
+  }
+  return out.slice(0, 15);
+}
 
 const db = process.env.DATABASE_URL ? crearPostgres(process.env.DATABASE_URL) : crearMemoria();
 const listo = db.init().then(
@@ -283,6 +325,18 @@ module.exports = {
     eventos.emit("contacto", c);
     return c;
   }),
+
+  // Etiquetas tipo CRM: reemplaza las del cliente por la lista dada
+  ponerEtiquetas: seguro(async (wa_id, etiquetas) => {
+    // Reutiliza la forma ya existente ("cotizado" -> "Cotizado") para no partir una etiqueta en dos
+    const existentes = new Map((await db.listarEtiquetas()).map((t) => [t.nombre.toLowerCase(), t.nombre]));
+    const limpias = normalizarEtiquetas(etiquetas).map((e) => existentes.get(e.toLowerCase()) || e);
+    const c = await db.ponerEtiquetas(wa_id, limpias);
+    eventos.emit("contacto", c);
+    return c;
+  }),
+  listarEtiquetas: seguro(() => db.listarEtiquetas()),
+  normalizarEtiquetas,
 
   contacto: seguro((wa_id) => db.contacto(wa_id)),
   listarContactos: seguro((opts) => db.listarContactos(opts)),

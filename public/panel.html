@@ -46,6 +46,17 @@
   .err { color:var(--alert); font-weight:600 }
   form#env { display:flex; gap:8px; padding:10px 16px; background:var(--panel); border-top:1px solid var(--line) }
   form#env textarea { flex:1; resize:none; height:42px; padding:10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); font:inherit }
+  /* Etiquetas tipo CRM: el color sale del nombre (--h = tono) */
+  .tag { display:inline-flex; align-items:center; gap:4px; font-size:11px; font-weight:600; padding:1px 8px; border-radius:999px;
+    background:hsl(var(--h) 70% 90%); color:hsl(var(--h) 55% 28%); white-space:nowrap; border:1px solid transparent }
+  @media (prefers-color-scheme: dark) { .tag { background:hsl(var(--h) 35% 24%); color:hsl(var(--h) 70% 82%) } }
+  .tag button { all:unset; cursor:pointer; opacity:.6; font-size:13px; line-height:1 } .tag button:hover { opacity:1 }
+  .c .tags { display:flex; gap:4px; flex-wrap:wrap; margin-top:4px }
+  #filtroEtq { display:flex; gap:6px; flex-wrap:wrap }
+  #filtroEtq .tag { cursor:pointer; opacity:.55 } #filtroEtq .tag.on { opacity:1; border-color:currentColor }
+  #filtroEtq .tag.todas { --h:220 }
+  #etqBar { display:flex; gap:6px; flex-wrap:wrap; align-items:center; padding:8px 16px; background:var(--panel); border-bottom:1px solid var(--line) }
+  #etqBar input { border:1px dashed var(--line); background:transparent; color:var(--text); border-radius:999px; padding:2px 10px; font:inherit; font-size:12px; width:150px }
   [hidden] { display:none !important }
   .vacio { margin:auto; color:var(--muted); text-align:center; padding:20px }
   #login { margin:auto; background:var(--panel); padding:28px; border-radius:14px; border:1px solid var(--line); display:flex; flex-direction:column; gap:12px; width:320px }
@@ -75,11 +86,17 @@
     <div class="filtros">
       <input type="search" id="buscar" placeholder="Buscar por nombre o número…" />
       <label><input type="checkbox" id="pend" /> Solo los que pidieron asesor</label>
+      <div id="filtroEtq"></div>
     </div>
     <div id="lista"></div>
   </aside>
   <section id="der" class="oculto">
     <div id="cab"><span class="vacio" style="padding:0">Selecciona una conversación</span></div>
+    <div id="etqBar" hidden>
+      <span id="etqChips"></span>
+      <input id="etqNueva" list="etqLista" placeholder="+ Agregar etiqueta" maxlength="30" />
+      <datalist id="etqLista"></datalist>
+    </div>
     <div id="aviso" hidden></div>
     <div id="msgs"></div>
     <form id="env" hidden>
@@ -98,6 +115,12 @@ const ESTADO = { sent: "✓", delivered: "✓✓", read: "✓✓ leído", failed
 
 let KEY = localStorage.getItem("panelKey") || "";
 let actual = null, contactos = [], es = null, recargaLista = null;
+let etiquetaFiltro = "", etiquetasActual = [], todasEtiquetas = [];
+const SUGERIDAS = ["Nuevo", "Cotizado", "Agendado", "Cliente", "Seguimiento", "No interesado", "Polarizado", "PPF", "Detailing"];
+
+// Color estable por etiqueta: el mismo nombre siempre da el mismo tono
+const tono = (s) => { let h = 0; for (const ch of String(s).toLowerCase()) h = (h * 31 + ch.codePointAt(0)) % 360; return h; };
+const chip = (e, extra = "") => `<span class="tag" style="--h:${tono(e)}" ${extra}>${esc(e)}</span>`;
 
 async function api(ruta, opts = {}) {
   const r = await fetch(ruta, { ...opts, headers: { "Content-Type": "application/json", "x-admin-key": KEY, ...(opts.headers || {}) } });
@@ -123,20 +146,51 @@ async function iniciar() {
   document.title = `Panel · ${info.negocio}`;
   $("#titulo").textContent = info.negocio;
   $("#login").hidden = true; $("#top").hidden = $("#app").hidden = false;
-  await cargarLista();
+  await Promise.all([cargarEtiquetas(), cargarLista()]);
   conectarEventos();
 }
 
 const nombre = (c) => c?.nombre || "+" + (c?.wa_id || "");
 
+async function cargarEtiquetas() {
+  todasEtiquetas = await api("/panel/api/etiquetas");
+  if (etiquetaFiltro && !todasEtiquetas.some((t) => t.nombre === etiquetaFiltro)) etiquetaFiltro = "";
+  $("#filtroEtq").innerHTML = todasEtiquetas.length
+    ? `<span class="tag todas ${etiquetaFiltro ? "" : "on"}" data-etq="">Todas</span>` +
+      todasEtiquetas.map((t) => `<span class="tag ${t.nombre === etiquetaFiltro ? "on" : ""}" style="--h:${tono(t.nombre)}"
+        data-etq="${esc(t.nombre)}">${esc(t.nombre)} · ${t.clientes}</span>`).join("")
+    : "";
+  const usadas = new Set(todasEtiquetas.map((t) => t.nombre.toLowerCase()));
+  const opciones = [...todasEtiquetas.map((t) => t.nombre), ...SUGERIDAS.filter((s) => !usadas.has(s.toLowerCase()))];
+  $("#etqLista").innerHTML = opciones.map((o) => `<option value="${esc(o)}">`).join("");
+}
+
 async function cargarLista() {
-  const p = new URLSearchParams({ buscar: $("#buscar").value.trim(), pendientes: $("#pend").checked ? "1" : "" });
+  const p = new URLSearchParams({ buscar: $("#buscar").value.trim(), pendientes: $("#pend").checked ? "1" : "", etiqueta: etiquetaFiltro });
   contactos = await api("/panel/api/contactos?" + p);
   $("#lista").innerHTML = contactos.map((c) => `
     <div class="c ${c.wa_id === actual ? "act" : ""}" data-id="${esc(c.wa_id)}">
       <div class="n">${esc(nombre(c))} ${c.pendiente_asesor ? '<span class="badge">asesor</span>' : ""}<small>${c.ultimo_ts ? hora(c.ultimo_ts) : ""}</small></div>
       <div class="u">${esc(c.ultimo_texto)}</div>
-    </div>`).join("") || '<div class="vacio">Aún no hay conversaciones.<br>Aparecerán cuando alguien le escriba al bot.</div>';
+      ${c.etiquetas?.length ? `<div class="tags">${c.etiquetas.map((e) => chip(e)).join("")}</div>` : ""}
+    </div>`).join("") || `<div class="vacio">${etiquetaFiltro ? `Ningún cliente con la etiqueta "${esc(etiquetaFiltro)}".` : "Aún no hay conversaciones.<br>Aparecerán cuando alguien le escriba al bot."}</div>`;
+}
+
+function pintarEtiquetasActual() {
+  $("#etqChips").innerHTML = etiquetasActual.map((e) =>
+    chip(e).replace("</span>", `<button title="Quitar" data-quitar="${esc(e)}">×</button></span>`)).join(" ");
+}
+
+async function guardarEtiquetas(lista) {
+  const anterior = etiquetasActual;
+  etiquetasActual = lista;
+  pintarEtiquetasActual();
+  try {
+    const c = await api("/panel/api/etiquetas", { method: "POST", body: JSON.stringify({ wa_id: actual, etiquetas: lista }) });
+    etiquetasActual = c.etiquetas || [];
+    pintarEtiquetasActual();
+    cargarEtiquetas(); programarLista();
+  } catch (err) { etiquetasActual = anterior; pintarEtiquetasActual(); alert(err.message); }
 }
 const programarLista = () => { clearTimeout(recargaLista); recargaLista = setTimeout(cargarLista, 300); };
 
@@ -155,6 +209,9 @@ async function cargarConversacion() {
     <div><div class="t">${esc(nombre(c || { wa_id: actual }))}</div><small>+${esc(actual)}</small></div>
     <span class="sp"></span>
     ${c?.pendiente_asesor ? '<button id="atendido">✅ Marcar atendido</button>' : '<button id="marcar">🙋 Marcar pendiente</button>'}`;
+  etiquetasActual = c?.etiquetas || [];
+  $("#etqBar").hidden = false;
+  pintarEtiquetasActual();
   const aviso = [];
   if (c?.pendiente_asesor) aviso.push(`🙋 Pidió asesor: ${c.motivo_asesor || ""}`);
   if (!c?.ventana_abierta) aviso.push("⏰ Pasaron más de 24 h desde su último mensaje: Meta solo permite escribirle con una plantilla aprobada.");
@@ -176,6 +233,27 @@ $("#cab").addEventListener("click", async (e) => {
     cargarConversacion(); cargarLista();
   }
 });
+$("#filtroEtq").addEventListener("click", (e) => {
+  const el = e.target.closest("[data-etq]");
+  if (!el) return;
+  etiquetaFiltro = el.dataset.etq === etiquetaFiltro ? "" : el.dataset.etq;
+  cargarEtiquetas(); cargarLista();
+});
+$("#etqChips").addEventListener("click", (e) => {
+  const q = e.target.closest("[data-quitar]")?.dataset.quitar;
+  if (q != null) guardarEtiquetas(etiquetasActual.filter((x) => x !== q));
+});
+function agregarEtiqueta() {
+  const v = $("#etqNueva").value.replace(/\s+/g, " ").trim();
+  $("#etqNueva").value = "";
+  if (!v || !actual || etiquetasActual.some((x) => x.toLowerCase() === v.toLowerCase())) return;
+  // Si ya existe con otras mayúsculas, se usa la forma existente para no duplicar
+  const existente = todasEtiquetas.find((t) => t.nombre.toLowerCase() === v.toLowerCase())?.nombre;
+  guardarEtiquetas([...etiquetasActual, existente || v]);
+}
+$("#etqNueva").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); agregarEtiqueta(); } });
+// Elegir una opción de la lista también la agrega
+$("#etqNueva").addEventListener("change", () => { if ($("#etqNueva").value.trim()) agregarEtiqueta(); });
 $("#buscar").addEventListener("input", programarLista);
 $("#pend").addEventListener("change", cargarLista);
 $("#texto").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#env").requestSubmit(); } });
@@ -197,7 +275,7 @@ function conectarEventos() {
   const alCambiar = (e) => { const d = JSON.parse(e.data); programarLista(); if (d.wa_id === actual) cargarConversacion(); };
   es.addEventListener("mensaje", alCambiar);
   es.addEventListener("estado", alCambiar);
-  es.addEventListener("contacto", alCambiar);
+  es.addEventListener("contacto", (e) => { alCambiar(e); cargarEtiquetas(); });
 }
 
 if (KEY) iniciar().catch(mostrarLogin); else mostrarLogin();

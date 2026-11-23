@@ -13,6 +13,7 @@ module.exports = function montarPanel(app, { historial, enviarManual, adminOk, n
     const filas = await historial.listarContactos({
       buscar: req.query.buscar || "",
       pendientes: req.query.pendientes === "1",
+      etiqueta: req.query.etiqueta || "",
       limite: lim(req.query.limite, 100),
     });
     res.json((filas || []).map((c) => ({ ...c, ventana_abierta: historial.ventanaAbierta(c) })));
@@ -42,6 +43,17 @@ module.exports = function montarPanel(app, { historial, enviarManual, adminOk, n
     const { wa_id, pendiente = false } = req.body || {};
     if (!wa_id) return res.status(400).json({ error: "Falta wa_id" });
     res.json(await historial.marcarAsesor(String(wa_id), !!pendiente));
+  });
+
+  // Etiquetas tipo CRM
+  app.get("/panel/api/etiquetas", auth, async (_req, res) => res.json((await historial.listarEtiquetas()) || []));
+
+  app.post("/panel/api/etiquetas", auth, async (req, res) => {
+    const { wa_id, etiquetas } = req.body || {};
+    if (!wa_id || !Array.isArray(etiquetas)) return res.status(400).json({ error: "Faltan wa_id o etiquetas" });
+    const c = await historial.ponerEtiquetas(String(wa_id), etiquetas);
+    if (!c) return res.status(500).json({ error: "No se pudieron guardar las etiquetas" });
+    res.json(c);
   });
 
   // Tiempo real (Server-Sent Events). EventSource no permite cabeceras: la clave va en ?key=

@@ -13,6 +13,7 @@ module.exports = function montarPanel(app, { historial, enviarManual, adminOk, n
     const filas = await historial.listarContactos({
       buscar: req.query.buscar || "",
       pendientes: req.query.pendientes === "1",
+      humano: req.query.humano === "1",
       etiqueta: req.query.etiqueta || "",
       limite: lim(req.query.limite, 100),
     });
@@ -43,6 +44,15 @@ module.exports = function montarPanel(app, { historial, enviarManual, adminOk, n
     const { wa_id, pendiente = false } = req.body || {};
     if (!wa_id) return res.status(400).json({ error: "Falta wa_id" });
     res.json(await historial.marcarAsesor(String(wa_id), !!pendiente));
+  });
+
+  // Modo humano: detener o reactivar el bot para un cliente
+  app.post("/panel/api/bot", auth, async (req, res) => {
+    const { wa_id, pausado } = req.body || {};
+    if (!wa_id || typeof pausado !== "boolean") return res.status(400).json({ error: "Faltan wa_id o pausado" });
+    const c = await historial.pausarBot(String(wa_id), pausado);
+    if (!c) return res.status(500).json({ error: "No se pudo cambiar el modo del bot" });
+    res.json(c);
   });
 
   // Etiquetas tipo CRM

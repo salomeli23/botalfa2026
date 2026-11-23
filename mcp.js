@@ -31,6 +31,7 @@ function crearServidor({ historial, enviarManual, negocio }) {
     pidio_asesor: !!c.pendiente_asesor,
     ...(c.pendiente_asesor ? { motivo: c.motivo_asesor } : {}),
     etiquetas: c.etiquetas || [],
+    modo_humano: !!c.bot_pausado,
     puede_responder: historial.ventanaAbierta(c),
   });
 
@@ -41,11 +42,12 @@ function crearServidor({ historial, enviarManual, negocio }) {
       buscar: z.string().optional().describe("Filtra por nombre o número"),
       solo_pendientes: z.boolean().optional().describe("Solo los clientes que pidieron hablar con un asesor"),
       etiqueta: z.string().optional().describe("Solo los clientes con esta etiqueta exacta (ver listar_etiquetas)"),
+      solo_modo_humano: z.boolean().optional().describe("Solo los clientes con el bot detenido (los atiende una persona)"),
       limite: z.number().int().min(1).max(100).optional().describe("Por defecto 20"),
     },
     annotations: { readOnlyHint: true },
-  }, async ({ buscar, solo_pendientes, etiqueta, limite = 20 }) => {
-    const filas = await historial.listarContactos({ buscar, pendientes: !!solo_pendientes, etiqueta, limite });
+  }, async ({ buscar, solo_pendientes, etiqueta, solo_modo_humano, limite = 20 }) => {
+    const filas = await historial.listarContactos({ buscar, pendientes: !!solo_pendientes, humano: !!solo_modo_humano, etiqueta, limite });
     return ok((filas || []).map(contactoOut));
   });
 
@@ -104,6 +106,22 @@ function crearServidor({ historial, enviarManual, negocio }) {
   }, async ({ numero, pendiente = false }) => {
     await historial.marcarAsesor(soloDigitos(numero), pendiente);
     return ok(pendiente ? "Marcado como pendiente." : "Marcado como atendido.");
+  });
+
+  server.registerTool("modo_humano", {
+    title: "Modo humano (detener o reactivar el bot)",
+    description: "Detiene el bot para un cliente para que lo atienda una persona (sus mensajes se siguen guardando, pero el bot no responde), o lo reactiva.",
+    inputSchema: {
+      numero: z.string().describe("Número del cliente, ej. 573001234567"),
+      activar: z.boolean().describe("true = detener el bot (modo humano); false = reactivar el bot"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false },
+  }, async ({ numero, activar }) => {
+    const wa_id = soloDigitos(numero);
+    if (!(await historial.contacto(wa_id))) return fallo(`No hay conversación con ${wa_id}.`);
+    const c = await historial.pausarBot(wa_id, activar);
+    if (!c) return fallo("No se pudo cambiar el modo del bot.");
+    return ok(activar ? `Bot detenido para ${wa_id}: modo humano activo.` : `Bot reactivado para ${wa_id}.`);
   });
 
   server.registerTool("listar_etiquetas", {

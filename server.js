@@ -1279,9 +1279,14 @@ app.post("/webhook", (req, res) => {
         for (const message of messages) {
           console.log("Mensaje recibido de", message.from, "tipo:", message.type);
           historial.registrarEntrante(message, { nombre: nombres[message.from], phone_id: phoneId });
-          contexto.run({ phoneId }, () =>
-            handleIncoming(message).catch((e) => console.error("Error manejando mensaje:", e))
-          );
+          contexto.run({ phoneId }, async () => {
+            // Modo humano: el mensaje queda en el panel, pero el bot no responde
+            if (await historial.botPausado(message.from)) {
+              console.log(`Modo humano: bot detenido para ${message.from}, no responde`);
+              return;
+            }
+            await handleIncoming(message).catch((e) => console.error("Error manejando mensaje:", e));
+          });
         }
       }
     }

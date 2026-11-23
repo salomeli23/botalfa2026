@@ -96,7 +96,8 @@ function crearPostgres(url) {
         );
         CREATE INDEX IF NOT EXISTS wa_mensajes_contacto_ts ON wa_mensajes (wa_id, ts);
         ALTER TABLE wa_contactos ADD COLUMN IF NOT EXISTS etiquetas TEXT[] NOT NULL DEFAULT '{}';
-        CREATE INDEX IF NOT EXISTS wa_contactos_etiquetas ON wa_contactos USING GIN (etiquetas);`);
+        CREATE INDEX IF NOT EXISTS wa_contactos_etiquetas ON wa_contactos USING GIN (etiquetas);
+        ALTER TABLE wa_contactos ADD COLUMN IF NOT EXISTS bot_pausado BOOLEAN NOT NULL DEFAULT FALSE;`);
     },
     async guardarMensaje(m) {
       const rows = await q(
@@ -141,15 +142,24 @@ function crearPostgres(url) {
       );
       return rows[0];
     },
+    async pausarBot(wa_id, pausado) {
+      const rows = await q(
+        `INSERT INTO wa_contactos (wa_id, bot_pausado) VALUES ($1,$2)
+         ON CONFLICT (wa_id) DO UPDATE SET bot_pausado = $2 RETURNING *`,
+        [wa_id, pausado]
+      );
+      return rows[0];
+    },
     listarEtiquetas: () =>
       q(`SELECT e AS nombre, COUNT(*)::int AS clientes FROM wa_contactos, unnest(etiquetas) AS e
          GROUP BY e ORDER BY clientes DESC, e`),
     contacto: (wa_id) => q(`SELECT * FROM wa_contactos WHERE wa_id = $1`, [wa_id]).then((r) => r[0] || null),
-    listarContactos({ buscar, pendientes, etiqueta, limite = 50 } = {}) {
+    listarContactos({ buscar, pendientes, humano, etiqueta, limite = 50 } = {}) {
       const cond = [];
       const params = [];
       if (buscar) { params.push(`%${buscar}%`); cond.push(`(nombre ILIKE $${params.length} OR wa_id LIKE $${params.length})`); }
       if (pendientes) cond.push(`pendiente_asesor`);
+      if (humano) cond.push(`bot_pausado`);
       if (etiqueta) { params.push(etiqueta); cond.push(`$${params.length} = ANY(etiquetas)`); }
       params.push(limite);
       return q(
@@ -185,7 +195,7 @@ function crearMemoria() {
 
   const base = (wa_id) => contactos.get(wa_id) || {
     wa_id, nombre: null, phone_id: null, ultimo_ts: 0, ultimo_texto: null,
-    ultimo_entrante_ts: 0, pendiente_asesor: false, motivo_asesor: null, etiquetas: [],
+    ultimo_entrante_ts: 0, pendiente_asesor: false, motivo_asesor: null, etiquetas: [], bot_pausado: false,
   };
 
   return {
@@ -225,6 +235,12 @@ function crearMemoria() {
       contactos.set(wa_id, x);
       return x;
     },
+    async pausarBot(wa_id, pausado) {
+      const x = base(wa_id);
+      x.bot_pausado = pausado;
+      contactos.set(wa_id, x);
+      return x;
+    },
     async listarEtiquetas() {
       const cuenta = new Map();
       for (const c of contactos.values()) for (const e of c.etiquetas || []) cuenta.set(e, (cuenta.get(e) || 0) + 1);
@@ -232,10 +248,11 @@ function crearMemoria() {
         .sort((a, z) => z.clientes - a.clientes || a.nombre.localeCompare(z.nombre));
     },
     contacto: async (wa_id) => contactos.get(wa_id) || null,
-    async listarContactos({ buscar, pendientes, etiqueta, limite = 50 } = {}) {
+    async listarContactos({ buscar, pendientes, humano, etiqueta, limite = 50 } = {}) {
       const b = (buscar || "").toLowerCase();
       return [...contactos.values()]
         .filter((c) => !pendientes || c.pendiente_asesor)
+        .filter((c) => !humano || c.bot_pausado)
         .filter((c) => !etiqueta || (c.etiquetas || []).includes(etiqueta))
         .filter((c) => !b || c.wa_id.includes(b) || (c.nombre || "").toLowerCase().includes(b))
         .sort((a, z) => (z.pendiente_asesor - a.pendiente_asesor) || (z.ultimo_ts - a.ultimo_ts))
@@ -336,6 +353,15 @@ module.exports = {
     return c;
   }),
   listarEtiquetas: seguro(() => db.listarEtiquetas()),
+
+  // Modo humano: con el bot detenido para un cliente, sus mensajes se guardan pero el bot no responde
+  pausarBot: seguro(async (wa_id, pausado) => {
+    const c = await db.pausarBot(wa_id, !!pausado);
+    eventos.emit("contacto", c);
+    return c;
+  }),
+  // Si la base falla, devuelve false: es preferible que el bot responda a que se quede mudo
+  botPausado: async (wa_id) => !!(await seguro((id) => db.contacto(id))(wa_id))?.bot_pausado,
   normalizarEtiquetas,
 
   contacto: seguro((wa_id) => db.contacto(wa_id)),

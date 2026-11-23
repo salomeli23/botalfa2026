@@ -56,7 +56,7 @@ async function sendMessageDetallado(payload) {
   }
   const data = await res.json().catch(() => ({}));
   const id = data?.messages?.[0]?.id;
-  historial.registrarSaliente(payload, id, store.origen || "bot", store.phoneId || PHONE_NUMBER_ID);
+  historial.registrarSaliente(payload, id, store.origen || "bot", store.phoneId || PHONE_NUMBER_ID, store.asesor);
   return { ok: true, id };
 }
 
@@ -1558,7 +1558,7 @@ app.post("/conectar/finalizar", async (req, res) => {
 /* ------------------------------------------------------------------ */
 
 // Envia un texto libre desde el panel o desde Claude, por el numero que atiende a ese cliente
-async function enviarManual(to, texto, origen) {
+async function enviarManual(to, texto, origen, asesor) {
   const c = await historial.contacto(to);
   // Meta solo permite texto libre dentro de las 24 h siguientes al ultimo mensaje del cliente
   if (!historial.ventanaAbierta(c)) {
@@ -1570,7 +1570,7 @@ async function enviarManual(to, texto, origen) {
     };
   }
   const phoneId = c?.phone_id || PHONE_NUMBER_ID;
-  return contexto.run({ phoneId, origen }, () =>
+  return contexto.run({ phoneId, origen, asesor }, () =>
     sendMessageDetallado({ to, type: "text", text: { preview_url: true, body: texto } })
   );
 }

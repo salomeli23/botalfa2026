@@ -5,6 +5,32 @@ module.exports = function montarPanel(app, { historial, enviarManual, adminOk, n
   const auth = (req, res, next) => (adminOk(req) ? next() : res.status(401).json({ error: "Clave incorrecta" }));
   const lim = (v, def, max = 300) => Math.min(Math.max(Number(v) || def, 1), max);
 
+  // Nombre del asesor: lo escribe cada uno al entrar (la clave es la misma para todos).
+  // Llega en la cabecera x-asesor (codificada) o en ?asesor= para el canal en vivo.
+  const limpiarNombre = (s) => String(s || "").replace(/[\u0000-\u001f<>]/g, "").replace(/\s+/g, " ").trim().slice(0, 30);
+  // Lista fija de asesores (variable ASESORES="Andrea,Santiago"). Si está vacía, cada uno escribe su nombre libre.
+  const ASESORES = String(process.env.ASESORES || "").split(",").map(limpiarNombre).filter(Boolean);
+  const nombreAsesor = (req) => {
+    let raw = req.get("x-asesor") || req.query.asesor || "";
+    try { raw = decodeURIComponent(raw); } catch {}
+    const n = limpiarNombre(raw);
+    if (!n) return null;
+    if (!ASESORES.length) return n;
+    // Con lista fija, solo se aceptan esos nombres (con su escritura oficial)
+    return ASESORES.find((a) => a.toLowerCase() === n.toLowerCase()) || null;
+  };
+
+  // Público a propósito: el login la necesita antes de tener la clave (solo son nombres)
+  app.get("/panel/api/asesores", (_req, res) => res.json(ASESORES));
+
+  // Presencia: qué asesor tiene abierto qué chat (en memoria; se reconstruye sola si el servidor reinicia)
+  const conexiones = new Map(); // id de pestaña -> { asesor, viendo, res }
+  const presencia = () => [...conexiones.values()].map(({ asesor, viendo, desde }) => ({ asesor, viendo, desde }));
+  const avisarPresencia = () => {
+    const payload = `event: presencia\ndata: ${JSON.stringify(presencia())}\n\n`;
+    for (const c of conexiones.values()) c.res.write(payload);
+  };
+
   app.get("/panel", (_req, res) => res.sendFile(path.join(__dirname, "public", "panel.html")));
 
   app.get("/panel/api/info", auth, (_req, res) => res.json({ negocio }));
@@ -35,7 +61,7 @@ module.exports = function montarPanel(app, { historial, enviarManual, adminOk, n
   app.post("/panel/api/enviar", auth, async (req, res) => {
     const { to, texto } = req.body || {};
     if (!to || !String(texto || "").trim()) return res.status(400).json({ error: "Faltan destinatario o texto" });
-    const r = await enviarManual(String(to), String(texto), "panel");
+    const r = await enviarManual(String(to), String(texto), "panel", nombreAsesor(req));
     if (!r.ok) return res.status(422).json({ error: errorMeta(r.error) });
     res.json(r);
   });
@@ -66,6 +92,16 @@ module.exports = function montarPanel(app, { historial, enviarManual, adminOk, n
     res.json(c);
   });
 
+  // El panel avisa qué chat abrió (o null al cerrarlo)
+  app.post("/panel/api/presencia", auth, (req, res) => {
+    const { pestana, viendo } = req.body || {};
+    const c = conexiones.get(String(pestana || ""));
+    if (!c) return res.status(404).json({ error: "Pestaña no conectada" });
+    const nuevo = viendo ? String(viendo) : null;
+    if (c.viendo !== nuevo) { c.viendo = nuevo; c.desde = Date.now(); avisarPresencia(); }
+    res.json({ ok: true });
+  });
+
   // Tiempo real (Server-Sent Events). EventSource no permite cabeceras: la clave va en ?key=
   app.get("/panel/api/eventos", auth, (req, res) => {
     res.writeHead(200, {
@@ -80,9 +116,20 @@ module.exports = function montarPanel(app, { historial, enviarManual, adminOk, n
     const handlers = { mensaje: enviar("mensaje"), estado: enviar("estado"), contacto: enviar("contacto") };
     for (const [ev, fn] of Object.entries(handlers)) historial.eventos.on(ev, fn);
     const ping = setInterval(() => res.write(": ping\n\n"), 20000);
+
+    // Registrar esta pestaña para la presencia
+    const pestana = String(req.query.pestana || "").slice(0, 64);
+    if (pestana) {
+      conexiones.set(pestana, { asesor: nombreAsesor(req) || "Asesor", viendo: null, desde: Date.now(), res });
+      avisarPresencia();
+    } else {
+      res.write(`event: presencia\ndata: ${JSON.stringify(presencia())}\n\n`);
+    }
+
     req.on("close", () => {
       clearInterval(ping);
       for (const [ev, fn] of Object.entries(handlers)) historial.eventos.off(ev, fn);
+      if (pestana && conexiones.get(pestana)?.res === res) { conexiones.delete(pestana); avisarPresencia(); }
     });
   });
 };

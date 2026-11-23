@@ -61,6 +61,11 @@
   #filtroEtq .tag.todas { --h:220 }
   #etqBar { display:flex; gap:6px; flex-wrap:wrap; align-items:center; padding:8px 16px; background:var(--panel); border-bottom:1px solid var(--line) }
   #etqBar input { border:1px dashed var(--line); background:transparent; color:var(--text); border-radius:999px; padding:2px 10px; font:inherit; font-size:12px; width:150px }
+  /* Asesores: quién está conectado y quién ve cada chat */
+  #yo { font-size:13px; color:var(--muted) } #yo b { color:var(--text) }
+  #enLinea { font-size:12px; color:var(--muted) } #enLinea::before { content:"● "; color:var(--accent) }
+  #viendo { padding:6px 16px; font-size:13px; font-weight:600; background:var(--man); color:var(--manc); border-bottom:1px solid var(--line) }
+  .c .ojo { font-size:11px; color:var(--manc); font-weight:600; margin-top:3px }
   [hidden] { display:none !important }
   .vacio { margin:auto; color:var(--muted); text-align:center; padding:20px }
   #login { margin:auto; background:var(--panel); padding:28px; border-radius:14px; border:1px solid var(--line); display:flex; flex-direction:column; gap:12px; width:320px }
@@ -72,6 +77,8 @@
 <body>
 <form id="login" hidden>
   <h2 style="margin:0">Panel del bot</h2>
+  <input type="text" id="asesorNombre" placeholder="Tu nombre (ej. Camilo)" maxlength="30" autocomplete="name" required
+    style="padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);font:inherit" />
   <input type="password" id="clave" placeholder="ADMIN_KEY" autocomplete="current-password" required />
   <button class="primary">Entrar</button>
   <div id="loginErr" class="err"></div>
@@ -80,7 +87,9 @@
 <header id="top" hidden>
   <h1 id="titulo">Panel del bot</h1>
   <span id="live" class="live">conectando…</span>
+  <span id="enLinea" hidden></span>
   <span class="sp"></span>
+  <span id="yo"></span>
   <span class="leyenda"><span class="o">👤 cliente</span><span class="o bot">🤖 bot</span><span class="o telefono">📱 teléfono</span><span class="o panel">💻 panel</span></span>
   <button id="salir">Salir</button>
 </header>
@@ -97,6 +106,7 @@
   </aside>
   <section id="der" class="oculto">
     <div id="cab"><span class="vacio" style="padding:0">Selecciona una conversación</span></div>
+    <div id="viendo" hidden></div>
     <div id="etqBar" hidden>
       <span id="etqChips"></span>
       <input id="etqNueva" list="etqLista" placeholder="+ Agregar etiqueta" maxlength="30" />
@@ -118,7 +128,13 @@ const hora = (ts) => new Date(ts * 1000).toLocaleString([], { dateStyle: "short"
 const ORIGEN = { cliente: "👤", bot: "🤖 bot", telefono: "📱 teléfono", panel: "💻 panel", claude: "✨ Claude" };
 const ESTADO = { sent: "✓", delivered: "✓✓", read: "✓✓ leído", failed: "⚠️ falló" };
 
-let KEY = localStorage.getItem("panelKey") || "";
+const leer = (k) => { try { return localStorage.getItem(k) || ""; } catch { return ""; } };
+const guardar = (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch {} };
+let KEY = leer("panelKey");
+let ASESOR = leer("panelAsesor");
+// Identifica esta pestaña para la presencia (cada pestaña abierta cuenta por separado)
+const PESTANA = (crypto.randomUUID?.() || String(Math.random()).slice(2)) ;
+let presencia = [];
 let actual = null, contactos = [], es = null, recargaLista = null;
 let etiquetaFiltro = "", etiquetasActual = [], todasEtiquetas = [];
 const SUGERIDAS = ["Nuevo", "Cotizado", "Agendado", "Cliente", "Seguimiento", "No interesado", "Polarizado", "PPF", "Detailing"];
@@ -128,20 +144,28 @@ const tono = (s) => { let h = 0; for (const ch of String(s).toLowerCase()) h = (
 const chip = (e, extra = "") => `<span class="tag" style="--h:${tono(e)}" ${extra}>${esc(e)}</span>`;
 
 async function api(ruta, opts = {}) {
-  const r = await fetch(ruta, { ...opts, headers: { "Content-Type": "application/json", "x-admin-key": KEY, ...(opts.headers || {}) } });
+  const r = await fetch(ruta, { ...opts, headers: { "Content-Type": "application/json", "x-admin-key": KEY,
+    "x-asesor": encodeURIComponent(ASESOR), ...(opts.headers || {}) } });
   const j = await r.json().catch(() => ({}));
   if (r.status === 401) { salir(); throw new Error("Clave incorrecta"); }
   if (!r.ok) throw new Error(j.error || r.statusText);
   return j;
 }
 
-function salir() { localStorage.removeItem("panelKey"); KEY = ""; es?.close(); mostrarLogin(); }
-function mostrarLogin() { $("#login").hidden = false; $("#top").hidden = $("#app").hidden = true; }
+function salir() { guardar("panelKey", ""); KEY = ""; es?.close(); mostrarLogin(); }
+function mostrarLogin() {
+  $("#login").hidden = false; $("#top").hidden = $("#app").hidden = true;
+  $("#asesorNombre").value = ASESOR;
+  $("#clave").value = KEY;
+  (ASESOR ? $("#clave") : $("#asesorNombre")).focus();
+}
 
 $("#login").addEventListener("submit", async (e) => {
   e.preventDefault();
+  ASESOR = $("#asesorNombre").value.replace(/\s+/g, " ").trim().slice(0, 30);
   KEY = $("#clave").value.trim();
-  try { await iniciar(); localStorage.setItem("panelKey", KEY); }
+  if (!ASESOR) { $("#loginErr").textContent = "Escribe tu nombre"; return; }
+  try { await iniciar(); guardar("panelKey", KEY); guardar("panelAsesor", ASESOR); }
   catch (err) { $("#loginErr").textContent = err.message; }
 });
 $("#salir").addEventListener("click", salir);
@@ -150,6 +174,7 @@ async function iniciar() {
   const info = await api("/panel/api/info");
   document.title = `Panel · ${info.negocio}`;
   $("#titulo").textContent = info.negocio;
+  $("#yo").innerHTML = `Asesor: <b>${esc(ASESOR)}</b>`;
   $("#login").hidden = true; $("#top").hidden = $("#app").hidden = false;
   await Promise.all([cargarEtiquetas(), cargarLista()]);
   conectarEventos();
@@ -179,8 +204,29 @@ async function cargarLista() {
       <div class="n">${esc(nombre(c))} ${c.pendiente_asesor ? '<span class="badge">asesor</span>' : ""}${c.bot_pausado ? '<span class="badge humano" title="Bot detenido">👤 humano</span>' : ""}<small>${c.ultimo_ts ? hora(c.ultimo_ts) : ""}</small></div>
       <div class="u">${esc(c.ultimo_texto)}</div>
       ${c.etiquetas?.length ? `<div class="tags">${c.etiquetas.map((e) => chip(e)).join("")}</div>` : ""}
+      <div class="ojo" data-ojo="${esc(c.wa_id)}">${textoOjo(c.wa_id)}</div>
     </div>`).join("") || `<div class="vacio">${etiquetaFiltro ? `Ningún cliente con la etiqueta "${esc(etiquetaFiltro)}".` : "Aún no hay conversaciones.<br>Aparecerán cuando alguien le escriba al bot."}</div>`;
 }
+
+// ---- Presencia de asesores ----
+// Otros asesores (distintos a mí) que tienen abierto el chat de un cliente
+const otrosViendo = (wa_id) =>
+  [...new Set(presencia.filter((p) => p.viendo === wa_id && p.asesor !== ASESOR).map((p) => p.asesor))];
+const textoOjo = (wa_id) => { const n = otrosViendo(wa_id); return n.length ? `👀 ${esc(n.join(", "))}` : ""; };
+const unir = (n) => n.length > 1 ? `${n.slice(0, -1).join(", ")} y ${n.at(-1)}` : n[0];
+
+function pintarPresencia() {
+  const enLinea = [...new Set(presencia.map((p) => p.asesor))].filter((n) => n !== ASESOR);
+  $("#enLinea").hidden = !enLinea.length;
+  $("#enLinea").textContent = enLinea.length ? `También conectado: ${enLinea.join(", ")}` : "";
+  document.querySelectorAll("[data-ojo]").forEach((el) => { el.innerHTML = textoOjo(el.dataset.ojo); });
+  const n = actual ? otrosViendo(actual) : [];
+  $("#viendo").hidden = !n.length;
+  $("#viendo").textContent = n.length ? `👀 ${unir(n)} ${n.length > 1 ? "están" : "está"} viendo este chat: coordínense antes de responder.` : "";
+}
+
+const avisarViendo = () =>
+  api("/panel/api/presencia", { method: "POST", body: JSON.stringify({ pestana: PESTANA, viendo: actual }) }).catch(() => {});
 
 function pintarEtiquetasActual() {
   $("#etqChips").innerHTML = etiquetasActual.map((e) =>
@@ -204,6 +250,8 @@ async function abrir(wa_id) {
   actual = wa_id;
   $("#izq").classList.add("oculto"); $("#der").classList.remove("oculto");
   document.querySelectorAll(".c").forEach((el) => el.classList.toggle("act", el.dataset.id === wa_id));
+  avisarViendo();
+  pintarPresencia();
   await cargarConversacion();
 }
 
@@ -230,7 +278,7 @@ async function cargarConversacion() {
   $("#aviso").innerHTML = aviso.map(esc).join("<br>");
   $("#env").hidden = !c?.ventana_abierta;
   $("#msgs").innerHTML = mensajes.map((m) => `
-    <div class="m ${m.direccion === "saliente" ? "out" : ""} ${m.origen}"><div class="tx">${esc(m.texto)}</div><div class="meta">${m.origen !== "cliente" ? `<span class="o ${m.origen}">${ORIGEN[m.origen] || m.origen}</span>` : ""}
+    <div class="m ${m.direccion === "saliente" ? "out" : ""} ${m.origen}"><div class="tx">${esc(m.texto)}</div><div class="meta">${m.origen !== "cliente" ? `<span class="o ${m.origen}">${m.origen === "panel" && m.asesor ? `💻 ${esc(m.asesor)}` : ORIGEN[m.origen] || m.origen}</span>` : ""}
       <span>${hora(m.ts)}</span>${m.estado ? `<span class="${m.estado === "failed" ? "err" : ""}">${ESTADO[m.estado] || m.estado}</span>` : ""}</div>
     </div>`).join("") || '<div class="vacio">Sin mensajes</div>';
   $("#msgs").scrollTop = $("#msgs").scrollHeight;
@@ -238,7 +286,7 @@ async function cargarConversacion() {
 
 $("#lista").addEventListener("click", (e) => { const el = e.target.closest(".c"); if (el) abrir(el.dataset.id); });
 $("#cab").addEventListener("click", async (e) => {
-  if (e.target.id === "volver") { actual = null; $("#izq").classList.remove("oculto"); $("#der").classList.add("oculto"); }
+  if (e.target.id === "volver") { actual = null; avisarViendo(); pintarPresencia(); $("#izq").classList.remove("oculto"); $("#der").classList.add("oculto"); }
   if (e.target.id === "botToggle") {
     const detener = e.target.classList.contains("detener");
     e.target.disabled = true;
@@ -288,8 +336,11 @@ $("#env").addEventListener("submit", async (e) => {
 
 function conectarEventos() {
   es?.close();
-  es = new EventSource("/panel/api/eventos?key=" + encodeURIComponent(KEY));
-  es.onopen = () => { $("#live").textContent = "en vivo"; $("#live").classList.add("on"); };
+  const p = new URLSearchParams({ key: KEY, asesor: ASESOR, pestana: PESTANA });
+  es = new EventSource("/panel/api/eventos?" + p);
+  // Al (re)conectar, el servidor no sabe qué chat tengo abierto: se lo recuerdo
+  es.onopen = () => { $("#live").textContent = "en vivo"; $("#live").classList.add("on"); if (actual) avisarViendo(); };
+  es.addEventListener("presencia", (e) => { presencia = JSON.parse(e.data); pintarPresencia(); });
   es.onerror = () => { $("#live").textContent = "reconectando…"; $("#live").classList.remove("on"); };
   const alCambiar = (e) => { const d = JSON.parse(e.data); programarLista(); if (d.wa_id === actual) cargarConversacion(); };
   es.addEventListener("mensaje", alCambiar);
@@ -297,7 +348,8 @@ function conectarEventos() {
   es.addEventListener("contacto", (e) => { alCambiar(e); cargarEtiquetas(); });
 }
 
-if (KEY) iniciar().catch(mostrarLogin); else mostrarLogin();
+// Con clave y nombre guardados entra directo; si falta el nombre (sesiones de antes), lo pide una vez
+if (KEY && ASESOR) iniciar().catch(mostrarLogin); else mostrarLogin();
 </script>
 </body>
 </html>

@@ -65,7 +65,7 @@ function crearServidor({ historial, enviarManual, negocio }) {
     if (!c) return fallo(`No hay conversación con ${wa_id}.`);
     return ok({
       cliente: contactoOut(c),
-      mensajes: (mensajes || []).map((m) => ({ de: m.origen, texto: m.texto, fecha: iso(m.ts), ...(m.estado ? { estado: m.estado } : {}) })),
+      mensajes: (mensajes || []).map((m) => ({ de: m.origen, ...(m.asesor ? { asesor: m.asesor } : {}), texto: m.texto, fecha: iso(m.ts), ...(m.estado ? { estado: m.estado } : {}) })),
     });
   });
 

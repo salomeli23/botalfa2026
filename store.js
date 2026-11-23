@@ -97,13 +97,14 @@ function crearPostgres(url) {
         CREATE INDEX IF NOT EXISTS wa_mensajes_contacto_ts ON wa_mensajes (wa_id, ts);
         ALTER TABLE wa_contactos ADD COLUMN IF NOT EXISTS etiquetas TEXT[] NOT NULL DEFAULT '{}';
         CREATE INDEX IF NOT EXISTS wa_contactos_etiquetas ON wa_contactos USING GIN (etiquetas);
-        ALTER TABLE wa_contactos ADD COLUMN IF NOT EXISTS bot_pausado BOOLEAN NOT NULL DEFAULT FALSE;`);
+        ALTER TABLE wa_contactos ADD COLUMN IF NOT EXISTS bot_pausado BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE wa_mensajes ADD COLUMN IF NOT EXISTS asesor TEXT;`);
     },
     async guardarMensaje(m) {
       const rows = await q(
-        `INSERT INTO wa_mensajes (id, wa_id, direccion, origen, tipo, texto, ts, estado)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING RETURNING id`,
-        [m.id, m.wa_id, m.direccion, m.origen, m.tipo, m.texto, m.ts, m.estado || null]
+        `INSERT INTO wa_mensajes (id, wa_id, direccion, origen, tipo, texto, ts, estado, asesor)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO NOTHING RETURNING id`,
+        [m.id, m.wa_id, m.direccion, m.origen, m.tipo, m.texto, m.ts, m.estado || null, m.asesor || null]
       );
       return rows.length > 0;
     },
@@ -305,13 +306,14 @@ const seguro = (fn) => async (...args) => {
   try { await listo; return await fn(...args); } catch (e) { console.error("Historial:", e.message); return null; }
 };
 
-const registrar = seguro(async ({ id, wa_id, direccion, origen, tipo, texto, ts, estado, nombre, phone_id }) => {
+const registrar = seguro(async ({ id, wa_id, direccion, origen, tipo, texto, ts, estado, nombre, phone_id, asesor }) => {
   if (!id || !wa_id) return;
   ts = Number(ts) || ahora();
-  const nuevo = await db.guardarMensaje({ id, wa_id, direccion, origen, tipo, texto, ts, estado });
+  asesor = asesor || null;
+  const nuevo = await db.guardarMensaje({ id, wa_id, direccion, origen, tipo, texto, ts, estado, asesor });
   if (!nuevo) return;
   const contacto = await db.tocarContacto({ wa_id, nombre, phone_id, ts, texto, entrante: direccion === "entrante" });
-  eventos.emit("mensaje", { id, wa_id, direccion, origen, tipo, texto, ts, estado: estado || null }, contacto);
+  eventos.emit("mensaje", { id, wa_id, direccion, origen, tipo, texto, ts, estado: estado || null, asesor }, contacto);
 });
 
 module.exports = {
@@ -329,8 +331,9 @@ module.exports = {
     registrar({ id: m.id, wa_id: m.to, direccion: "saliente", origen: "telefono", tipo: m.type, texto: textoEntrante(m), ts: m.timestamp, estado: "sent", phone_id }),
 
   // Lo que envió el bot, el panel o Claude por la API
-  registrarSaliente: (payload, id, origen, phone_id) =>
-    registrar({ id, wa_id: payload.to, direccion: "saliente", origen, tipo: payload.type, texto: textoSaliente(payload), estado: "sent", phone_id }),
+  // (asesor: nombre de quien lo envió desde el panel)
+  registrarSaliente: (payload, id, origen, phone_id, asesor) =>
+    registrar({ id, wa_id: payload.to, direccion: "saliente", origen, tipo: payload.type, texto: textoSaliente(payload), estado: "sent", phone_id, asesor }),
 
   actualizarEstado: seguro(async (id, estado) => {
     const m = await db.actualizarEstado(id, estado);

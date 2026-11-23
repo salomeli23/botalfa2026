@@ -30,6 +30,7 @@ function crearServidor({ historial, enviarManual, negocio }) {
     fecha: iso(c.ultimo_ts),
     pidio_asesor: !!c.pendiente_asesor,
     ...(c.pendiente_asesor ? { motivo: c.motivo_asesor } : {}),
+    etiquetas: c.etiquetas || [],
     puede_responder: historial.ventanaAbierta(c),
   });
 
@@ -39,11 +40,12 @@ function crearServidor({ historial, enviarManual, negocio }) {
     inputSchema: {
       buscar: z.string().optional().describe("Filtra por nombre o número"),
       solo_pendientes: z.boolean().optional().describe("Solo los clientes que pidieron hablar con un asesor"),
+      etiqueta: z.string().optional().describe("Solo los clientes con esta etiqueta exacta (ver listar_etiquetas)"),
       limite: z.number().int().min(1).max(100).optional().describe("Por defecto 20"),
     },
     annotations: { readOnlyHint: true },
-  }, async ({ buscar, solo_pendientes, limite = 20 }) => {
-    const filas = await historial.listarContactos({ buscar, pendientes: !!solo_pendientes, limite });
+  }, async ({ buscar, solo_pendientes, etiqueta, limite = 20 }) => {
+    const filas = await historial.listarContactos({ buscar, pendientes: !!solo_pendientes, etiqueta, limite });
     return ok((filas || []).map(contactoOut));
   });
 
@@ -102,6 +104,32 @@ function crearServidor({ historial, enviarManual, negocio }) {
   }, async ({ numero, pendiente = false }) => {
     await historial.marcarAsesor(soloDigitos(numero), pendiente);
     return ok(pendiente ? "Marcado como pendiente." : "Marcado como atendido.");
+  });
+
+  server.registerTool("listar_etiquetas", {
+    title: "Listar etiquetas",
+    description: "Etiquetas que se usan para organizar a los clientes (tipo CRM), con cuántos clientes tiene cada una.",
+    inputSchema: {},
+    annotations: { readOnlyHint: true },
+  }, async () => ok((await historial.listarEtiquetas()) || []));
+
+  server.registerTool("etiquetar_cliente", {
+    title: "Etiquetar cliente",
+    description: "Agrega y/o quita etiquetas de un cliente para organizarlo (ej. Cotizado, Agendado, Cliente, Seguimiento). Reutiliza las etiquetas existentes de listar_etiquetas para no crear duplicados.",
+    inputSchema: {
+      numero: z.string().describe("Número del cliente, ej. 573001234567"),
+      agregar: z.array(z.string()).optional().describe("Etiquetas a agregar"),
+      quitar: z.array(z.string()).optional().describe("Etiquetas a quitar"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false },
+  }, async ({ numero, agregar = [], quitar = [] }) => {
+    const wa_id = soloDigitos(numero);
+    const c = await historial.contacto(wa_id);
+    if (!c) return fallo(`No hay conversación con ${wa_id}.`);
+    const fuera = new Set(quitar.map((e) => e.trim().toLowerCase()));
+    const nuevas = [...(c.etiquetas || []), ...agregar].filter((e) => !fuera.has(String(e).trim().toLowerCase()));
+    const r = await historial.ponerEtiquetas(wa_id, nuevas);
+    return r ? ok({ numero: wa_id, etiquetas: r.etiquetas }) : fallo("No se pudieron guardar las etiquetas.");
   });
 
   return server;

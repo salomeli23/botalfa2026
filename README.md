@@ -60,6 +60,7 @@ Abre `https://TU-APP.up.railway.app/panel` e ingresa tu `ADMIN_KEY`. Desde ahí 
 - Ver en tiempo real todas las conversaciones. Cada mensaje indica quién lo escribió: 👤 cliente, 🤖 bot, 📱 teléfono (lo que respondes desde la app WhatsApp Business), 💻 panel o ✨ Claude.
 - Ver primero, con la etiqueta **asesor**, a los clientes que pidieron hablar con un asesor, junto con el motivo. Cuando los atiendas, pulsa **Marcar atendido**.
 - Responder desde el panel. El mensaje sale por el número del negocio y también aparece en tu celular.
+- Organizar a los clientes con **etiquetas**, como en un CRM (Cotizado, Agendado, Cliente…). En una conversación, escribe la etiqueta en *+ Agregar etiqueta* o elige una de la lista. Para quitarla, pulsa la ×. Debajo del buscador aparecen todas las etiquetas con su número de clientes: pulsa una para filtrar.
 
 ### MCP para Claude `/mcp`
 

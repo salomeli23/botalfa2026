@@ -8,11 +8,20 @@ module.exports = function montarPanel(app, { historial, enviarManual, adminOk, n
   // Nombre del asesor: lo escribe cada uno al entrar (la clave es la misma para todos).
   // Llega en la cabecera x-asesor (codificada) o en ?asesor= para el canal en vivo.
   const limpiarNombre = (s) => String(s || "").replace(/[\u0000-\u001f<>]/g, "").replace(/\s+/g, " ").trim().slice(0, 30);
+  // Lista fija de asesores (variable ASESORES="Andrea,Santiago"). Si está vacía, cada uno escribe su nombre libre.
+  const ASESORES = String(process.env.ASESORES || "").split(",").map(limpiarNombre).filter(Boolean);
   const nombreAsesor = (req) => {
     let raw = req.get("x-asesor") || req.query.asesor || "";
     try { raw = decodeURIComponent(raw); } catch {}
-    return limpiarNombre(raw) || null;
+    const n = limpiarNombre(raw);
+    if (!n) return null;
+    if (!ASESORES.length) return n;
+    // Con lista fija, solo se aceptan esos nombres (con su escritura oficial)
+    return ASESORES.find((a) => a.toLowerCase() === n.toLowerCase()) || null;
   };
+
+  // Público a propósito: el login la necesita antes de tener la clave (solo son nombres)
+  app.get("/panel/api/asesores", (_req, res) => res.json(ASESORES));
 
   // Presencia: qué asesor tiene abierto qué chat (en memoria; se reconstruye sola si el servidor reinicia)
   const conexiones = new Map(); // id de pestaña -> { asesor, viendo, res }

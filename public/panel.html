@@ -77,8 +77,11 @@
 <body>
 <form id="login" hidden>
   <h2 style="margin:0">Panel del bot</h2>
-  <input type="text" id="asesorNombre" placeholder="Tu nombre (ej. Camilo)" maxlength="30" autocomplete="name" required
+  <input type="text" id="asesorNombre" placeholder="Tu nombre (ej. Camilo)" maxlength="30" autocomplete="name"
     style="padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);font:inherit" />
+  <select id="asesorSel" hidden
+    style="padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);font:inherit">
+  </select>
   <input type="password" id="clave" placeholder="ADMIN_KEY" autocomplete="current-password" required />
   <button class="primary">Entrar</button>
   <div id="loginErr" class="err"></div>
@@ -153,18 +156,28 @@ async function api(ruta, opts = {}) {
 }
 
 function salir() { guardar("panelKey", ""); KEY = ""; es?.close(); mostrarLogin(); }
-function mostrarLogin() {
+let LISTA_ASESORES = [];
+async function mostrarLogin() {
   $("#login").hidden = false; $("#top").hidden = $("#app").hidden = true;
-  $("#asesorNombre").value = ASESOR;
+  try { LISTA_ASESORES = await fetch("/panel/api/asesores").then((r) => r.json()); } catch { LISTA_ASESORES = []; }
+  const fija = LISTA_ASESORES.length > 0;
+  $("#asesorNombre").hidden = fija;
+  $("#asesorSel").hidden = !fija;
+  if (fija) {
+    $("#asesorSel").innerHTML = `<option value="">¿Quién eres?</option>` +
+      LISTA_ASESORES.map((a) => `<option ${a === ASESOR ? "selected" : ""}>${esc(a)}</option>`).join("");
+  } else {
+    $("#asesorNombre").value = ASESOR;
+  }
   $("#clave").value = KEY;
-  (ASESOR ? $("#clave") : $("#asesorNombre")).focus();
+  (ASESOR ? $("#clave") : fija ? $("#asesorSel") : $("#asesorNombre")).focus();
 }
 
 $("#login").addEventListener("submit", async (e) => {
   e.preventDefault();
-  ASESOR = $("#asesorNombre").value.replace(/\s+/g, " ").trim().slice(0, 30);
+  ASESOR = (LISTA_ASESORES.length ? $("#asesorSel").value : $("#asesorNombre").value).replace(/\s+/g, " ").trim().slice(0, 30);
   KEY = $("#clave").value.trim();
-  if (!ASESOR) { $("#loginErr").textContent = "Escribe tu nombre"; return; }
+  if (!ASESOR) { $("#loginErr").textContent = LISTA_ASESORES.length ? "Elige tu nombre" : "Escribe tu nombre"; return; }
   try { await iniciar(); guardar("panelKey", KEY); guardar("panelAsesor", ASESOR); }
   catch (err) { $("#loginErr").textContent = err.message; }
 });
@@ -349,7 +362,12 @@ function conectarEventos() {
 }
 
 // Con clave y nombre guardados entra directo; si falta el nombre (sesiones de antes), lo pide una vez
-if (KEY && ASESOR) iniciar().catch(mostrarLogin); else mostrarLogin();
+// (si hay lista fija y el nombre guardado ya no está en ella, también lo pide)
+(async () => {
+  try { LISTA_ASESORES = await fetch("/panel/api/asesores").then((r) => r.json()); } catch {}
+  const valido = !LISTA_ASESORES.length || LISTA_ASESORES.includes(ASESOR);
+  if (KEY && ASESOR && valido) iniciar().catch(mostrarLogin); else mostrarLogin();
+})();
 </script>
 </body>
 </html>

@@ -1607,8 +1607,24 @@ async function enviarManual(to, texto, origen, asesor) {
   );
 }
 
-require("./panel")(app, { historial, enviarManual, adminOk, negocio: NEGOCIO });
-require("./mcp")(app, { historial, enviarManual, negocio: NEGOCIO });
+// "Lanzar bot" desde el panel o Claude: reinicia la conversacion del cliente y le envia el menu
+// principal (por si el bot no se activo solo). Si estaba en modo humano, reactiva el bot.
+async function lanzarBot(wa_id, quien) {
+  const c = await historial.contacto(wa_id);
+  if (!c) return { ok: false, error: "Este número no le ha escrito al bot." };
+  if (!historial.ventanaAbierta(c)) {
+    return { ok: false, error: "Pasaron más de 24 h desde el último mensaje de este cliente. Meta solo permite escribirle con una plantilla aprobada." };
+  }
+  const reactivado = !!c.bot_pausado;
+  if (reactivado && !(await historial.pausarBot(wa_id, false))) return { ok: false, error: "No se pudo reactivar el bot." };
+  sessions.delete(wa_id);
+  console.log(`Bot lanzado manualmente para ${wa_id}${quien ? ` por ${quien}` : ""}${reactivado ? " (estaba en modo humano)" : ""}`);
+  const enviado = await contexto.run({ phoneId: c.phone_id || PHONE_NUMBER_ID }, () => sendMainMenu(wa_id));
+  return enviado ? { ok: true, reactivado } : { ok: false, error: "Meta no aceptó el menú. Revisa los registros e intenta de nuevo." };
+}
+
+require("./panel")(app, { historial, enviarManual, lanzarBot, adminOk, negocio: NEGOCIO });
+require("./mcp")(app, { historial, enviarManual, lanzarBot, negocio: NEGOCIO });
 
 app.get("/", (_req, res) => res.send("Bot de WhatsApp funcionando ✅"));
 

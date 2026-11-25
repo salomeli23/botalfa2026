@@ -18,7 +18,7 @@ function claveValida(req) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-function crearServidor({ historial, enviarManual, negocio }) {
+function crearServidor({ historial, enviarManual, lanzarBot, negocio }) {
   const server = new McpServer({ name: `whatsapp-${negocio}`, version: "1.0.0" });
   const ok = (data) => ({ content: [{ type: "text", text: typeof data === "string" ? data : JSON.stringify(data, null, 2) }] });
   const fallo = (msg) => ({ isError: true, content: [{ type: "text", text: msg }] });
@@ -122,6 +122,17 @@ function crearServidor({ historial, enviarManual, negocio }) {
     const c = await historial.pausarBot(wa_id, activar);
     if (!c) return fallo("No se pudo cambiar el modo del bot.");
     return ok(activar ? `Bot detenido para ${wa_id}: modo humano activo.` : `Bot reactivado para ${wa_id}.`);
+  });
+
+  server.registerTool("lanzar_bot", {
+    title: "Lanzar bot",
+    description: "Reinicia la conversación del cliente y le envía el menú principal del bot (por si el bot no se activó solo). Si el cliente estaba en modo humano, reactiva el bot. Solo funciona dentro de la ventana de 24 h. Confirma con el usuario antes de usarlo.",
+    inputSchema: { numero: z.string().describe("Número del cliente, ej. 573001234567") },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  }, async ({ numero }) => {
+    const wa_id = soloDigitos(numero);
+    const r = await lanzarBot(wa_id, "Claude");
+    return r.ok ? ok(`Menú del bot enviado a ${wa_id}.${r.reactivado ? " El bot estaba detenido y quedó reactivado." : ""}`) : fallo(errorMeta(r.error));
   });
 
   server.registerTool("listar_etiquetas", {

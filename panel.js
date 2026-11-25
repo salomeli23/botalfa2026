@@ -1,7 +1,7 @@
 // Panel web de conversaciones: /panel (protegido con ADMIN_KEY)
 const path = require("path");
 
-module.exports = function montarPanel(app, { historial, enviarManual, adminOk, negocio }) {
+module.exports = function montarPanel(app, { historial, enviarManual, lanzarBot, adminOk, negocio }) {
   const auth = (req, res, next) => (adminOk(req) ? next() : res.status(401).json({ error: "Clave incorrecta" }));
   const lim = (v, def, max = 300) => Math.min(Math.max(Number(v) || def, 1), max);
 
@@ -70,6 +70,15 @@ module.exports = function montarPanel(app, { historial, enviarManual, adminOk, n
     const { wa_id, pendiente = false } = req.body || {};
     if (!wa_id) return res.status(400).json({ error: "Falta wa_id" });
     res.json(await historial.marcarAsesor(String(wa_id), !!pendiente));
+  });
+
+  // Lanzar bot: le envía el menú principal al cliente (y reactiva el bot si estaba detenido)
+  app.post("/panel/api/lanzar", auth, async (req, res) => {
+    const { wa_id } = req.body || {};
+    if (!wa_id) return res.status(400).json({ error: "Falta wa_id" });
+    const r = await lanzarBot(String(wa_id), nombreAsesor(req));
+    if (!r.ok) return res.status(422).json({ error: errorMeta(r.error) });
+    res.json(r);
   });
 
   // Modo humano: detener o reactivar el bot para un cliente

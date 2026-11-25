@@ -275,6 +275,7 @@ async function cargarConversacion() {
     <button id="volver" title="Volver" style="padding:4px 10px">←</button>
     <div><div class="t">${esc(nombre(c || { wa_id: actual }))}</div><small>+${esc(actual)}</small></div>
     <span class="sp"></span>
+    ${c?.ventana_abierta ? '<button id="lanzar" title="Envía el menú principal del bot a este cliente">🤖 Lanzar bot</button>' : ""}
     ${c?.bot_pausado
       ? '<button id="botToggle" class="reactivar" title="El bot vuelve a responder automáticamente">▶ Reactivar bot</button>'
       : '<button id="botToggle" class="detener" title="El bot deja de responder a este cliente; lo atiendes tú">⏸ Detener bot</button>'}
@@ -304,6 +305,14 @@ $("#cab").addEventListener("click", async (e) => {
     const detener = e.target.classList.contains("detener");
     e.target.disabled = true;
     try { await api("/panel/api/bot", { method: "POST", body: JSON.stringify({ wa_id: actual, pausado: detener }) }); }
+    catch (err) { alert(err.message); }
+    cargarConversacion(); cargarLista();
+  }
+  if (e.target.id === "lanzar") {
+    const pausado = !!$("#botToggle")?.classList.contains("reactivar");
+    if (!confirm(`¿Enviar el menú del bot a este cliente?${pausado ? "\n\nEl bot está detenido: también se reactivará." : ""}`)) return;
+    e.target.disabled = true;
+    try { await api("/panel/api/lanzar", { method: "POST", body: JSON.stringify({ wa_id: actual }) }); }
     catch (err) { alert(err.message); }
     cargarConversacion(); cargarLista();
   }

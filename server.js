@@ -41,14 +41,33 @@ app.use(
 // (origen: "bot" por defecto, "panel" o "claude" segun el contexto).
 async function sendMessageDetallado(payload) {
   const store = contexto.getStore() || {};
-  const res = await fetch(apiUrl(), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ messaging_product: "whatsapp", ...payload }),
-  });
+  const pedir = () =>
+    fetch(apiUrl(), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ messaging_product: "whatsapp", ...payload }),
+      signal: AbortSignal.timeout(20000),
+    });
+  // Si la conexion con Meta se corta (ECONNRESET, "fetch failed") reintentamos:
+  // antes el cliente se quedaba sin respuesta.
+  let res;
+  for (let intento = 1; ; intento++) {
+    try {
+      res = await pedir();
+      if (res.status >= 500 && intento < 3) throw new Error(`Meta respondio ${res.status}`);
+      break;
+    } catch (e) {
+      if (intento >= 3) {
+        console.error(`Error de red enviando a ${payload.to} (${intento} intentos):`, e.cause?.code || e.message);
+        return { ok: false, error: JSON.stringify({ error: { message: "No se pudo conectar con Meta. Intenta de nuevo." } }) };
+      }
+      console.warn(`Reintentando envio a ${payload.to} (intento ${intento}):`, e.cause?.code || e.message);
+      await new Promise((r) => setTimeout(r, 700 * intento));
+    }
+  }
   if (!res.ok) {
     const error = await res.text();
     console.error("Error enviando mensaje:", res.status, error);
@@ -1114,11 +1133,23 @@ async function handleInteractive(from, id) {
 }
 
 const servicios_ids = new Set(Object.keys(descripciones));
-const SALUDOS = /^(hola|buenas|buenos dias|buenos días|buenas tardes|buenas noches|menu|menú|inicio)$/i;
+// Un saludo o "menu" reinicia el bot. Ademas del "hola" exacto, reconoce saludos al inicio
+// de un mensaje corto ("Hola buenas tardes", "Buen dia") y el texto que traen los anuncios
+// de WhatsApp ("Hola. ¿Puedo obtener más información sobre esto?").
+const normalizarSaludo = (t) =>
+  t.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9ñ ]+/g, " ").replace(/\s+/g, " ").trim();
+const INICIO_SALUDO = /^(hola+|holi+s?|ola|buenas|buen dia|buenos dias|buenas tardes|buenas noches|saludos|que tal|hey|hi|hello)\b/;
+const PIDE_INFO = /\b(mas informacion|mas info|quiero informacion|quiero info|informacion por favor)\b/;
+function esSaludo(texto) {
+  const n = normalizarSaludo(texto);
+  if (/^(menu|inicio|empezar|comenzar)$/.test(n)) return true;
+  if (INICIO_SALUDO.test(n) && n.length <= 60) return true;
+  return PIDE_INFO.test(n) && n.length <= 120;
+}
 
-async function handleText(from, texto) {
-  // Un saludo o "menu" siempre reinicia
-  if (SALUDOS.test(texto)) {
+async function handleText(from, texto, { anuncio = false } = {}) {
+  // Un saludo, "menu" o un mensaje que llega desde un anuncio siempre reinicia
+  if (anuncio || esSaludo(texto)) {
     sessions.delete(from);
     return sendMainMenu(from);
   }
@@ -1194,7 +1225,8 @@ async function handleIncoming(message) {
   }
 
   if (message.type === "text") {
-    return handleText(from, (message.text?.body || "").trim());
+    // message.referral: el cliente llego tocando un anuncio de WhatsApp (Click to WhatsApp)
+    return handleText(from, (message.text?.body || "").trim(), { anuncio: !!message.referral });
   }
 
   // Imagenes, audios, etc.

@@ -463,7 +463,7 @@ async function responderPelicula(from, id) {
 // El cliente quiere hablar con un asesor sobre el plan que vio
 async function antiatracoAAsesor(from) {
   const s = getSession(from) || {};
-  return pasarAAsesor(from, `Antiatraco: interesado en ${s.pelicula || "planes antiatraco"}`);
+  return pasarAAsesor(from, `Antiatraco: interesado en ${s.pelicula || "planes antiatraco"}`, { pidioAsesor: true });
 }
 
 /* ------------------------------------------------------------------ */
@@ -956,11 +956,16 @@ const PIANO_BLACK_INDEX = new Map(
   Object.entries(PIANO_BLACK).map(([llave, datos]) => [normalizar(llave), datos])
 );
 
-// Pasa la conversacion a un asesor y deja el aviso en los logs
-async function pasarAAsesor(from, motivo) {
+// Etiqueta que se pone cuando el cliente pide hablar con un asesor
+const ETIQUETA_PIDE_ASESOR = "Cliente pide Asesoría";
+
+// Pasa la conversacion a un asesor y deja el aviso en los logs.
+// pidioAsesor: el propio cliente pidio hablar con un asesor -> el bot se detiene
+// (modo humano) y el cliente queda con la etiqueta "Cliente pide Asesoría".
+async function pasarAAsesor(from, motivo, { pidioAsesor = false } = {}) {
   const s = getSession(from) || {};
   console.log(
-    `ASESOR: cliente ${from} | ${motivo} | servicio: ${NOMBRE_SERVICIO[s.servicio] || "-"} | vehiculo: ${s.vehiculo || "-"}`
+    `ASESOR: cliente ${from} | ${motivo} | servicio: ${NOMBRE_SERVICIO[s.servicio] || "-"} | vehiculo: ${s.vehiculo || "-"}${pidioAsesor ? " | MODO HUMANO" : ""}`
   );
   historial.marcarAsesor(
     from,
@@ -968,6 +973,16 @@ async function pasarAAsesor(from, motivo) {
     `${motivo} | servicio: ${NOMBRE_SERVICIO[s.servicio] || "-"} | vehiculo: ${s.vehiculo || "-"}`
   );
   setSession(from, { estado: "listo" });
+  if (pidioAsesor) {
+    await historial.pausarBot(from, true);
+    const c = await historial.contacto(from);
+    const etiquetas = c?.etiquetas || [];
+    if (!etiquetas.some((e) => e.toLowerCase() === ETIQUETA_PIDE_ASESOR.toLowerCase())) {
+      await historial.ponerEtiquetas(from, [...etiquetas, ETIQUETA_PIDE_ASESOR]);
+    }
+    // Sin boton de "volver al menu": el bot ya no responde hasta que un asesor lo reactive
+    return sendText(from, MSG_ASESOR);
+  }
   await sendText(
     from,
     "👤 Perfecto, un asesor te escribirá en breve para ayudarte. Si tienes alguna pregunta, escríbela aquí. 😊"
@@ -1090,7 +1105,7 @@ async function handleInteractive(from, id) {
     return arqPedirMedidas(from);
   }
   if (id?.startsWith("ppf_")) return responderPPF(from, id);
-  if (id === "asesor") return sendText(from, MSG_ASESOR);
+  if (id === "asesor") return pasarAAsesor(from, "Tocó Hablar con asesor", { pidioAsesor: true });
 
   // Eligio una marca
   if (id === ID_OTRA_MARCA) {
@@ -1140,6 +1155,7 @@ const normalizarSaludo = (t) =>
   t.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9ñ ]+/g, " ").replace(/\s+/g, " ").trim();
 const INICIO_SALUDO = /^(hola+|holi+s?|ola|buenas|buen dia|buenos dias|buenas tardes|buenas noches|saludos|que tal|hey|hi|hello)\b/;
 const PIDE_INFO = /\b(mas informacion|mas info|quiero informacion|quiero info|informacion por favor)\b/;
+const PIDE_ASESOR = /\b(asesor|asesora|asesoria|un humano|una persona|persona real|alguien real|hablar con alguien|atencion personalizada)\b/;
 function esSaludo(texto) {
   const n = normalizarSaludo(texto);
   if (/^(menu|inicio|empezar|comenzar)$/.test(n)) return true;
@@ -1148,6 +1164,11 @@ function esSaludo(texto) {
 }
 
 async function handleText(from, texto, { anuncio = false } = {}) {
+  // Escribio (aunque salude primero) que quiere hablar con un asesor / una persona
+  if (PIDE_ASESOR.test(normalizarSaludo(texto)) && texto.length <= 120) {
+    return pasarAAsesor(from, `Escribió: ${texto.slice(0, 200)}`, { pidioAsesor: true });
+  }
+
   // Un saludo, "menu" o un mensaje que llega desde un anuncio siempre reinicia
   if (anuncio || esSaludo(texto)) {
     sessions.delete(from);

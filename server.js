@@ -1657,6 +1657,39 @@ async function enviarManual(to, texto, origen, asesor) {
   );
 }
 
+// Imagen enviada desde el panel: se sube a Meta y se envía con su id (misma regla de 24 h)
+async function enviarImagen(to, buffer, mime, caption, asesor) {
+  const c = await historial.contacto(to);
+  if (!historial.ventanaAbierta(c)) {
+    return { ok: false, error: "Pasaron más de 24 h desde el último mensaje de este cliente. Meta solo permite escribirle con una plantilla aprobada." };
+  }
+  const phoneId = c.phone_id || PHONE_NUMBER_ID;
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("type", mime);
+  form.append("file", new Blob([buffer], { type: mime }), mime === "image/png" ? "imagen.png" : "imagen.jpg");
+  let media;
+  try {
+    const r = await fetch(`https://graph.facebook.com/${GRAPH_VERSION}/${phoneId}/media`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+      body: form,
+      signal: AbortSignal.timeout(60000),
+    });
+    media = await r.json().catch(() => ({}));
+    if (!r.ok || !media.id) {
+      console.error("Error subiendo imagen a Meta:", r.status, JSON.stringify(media));
+      return { ok: false, error: JSON.stringify(media) };
+    }
+  } catch (e) {
+    console.error("Error de red subiendo imagen:", e.cause?.code || e.message);
+    return { ok: false, error: JSON.stringify({ error: { message: "No se pudo subir la imagen a Meta. Intenta de nuevo." } }) };
+  }
+  return contexto.run({ phoneId, origen: "panel", asesor }, () =>
+    sendMessageDetallado({ to, type: "image", image: { id: media.id, ...(caption ? { caption } : {}) } })
+  );
+}
+
 // "Lanzar bot" desde el panel o Claude: reinicia la conversacion del cliente y le envia el menu
 // principal (por si el bot no se activo solo). Si estaba en modo humano, reactiva el bot.
 async function lanzarBot(wa_id, quien) {
@@ -1673,7 +1706,7 @@ async function lanzarBot(wa_id, quien) {
   return enviado ? { ok: true, reactivado } : { ok: false, error: "Meta no aceptó el menú. Revisa los registros e intenta de nuevo." };
 }
 
-require("./panel")(app, { historial, enviarManual, lanzarBot, adminOk, negocio: NEGOCIO });
+require("./panel")(app, { historial, enviarManual, enviarImagen, lanzarBot, adminOk, negocio: NEGOCIO });
 require("./mcp")(app, { historial, enviarManual, lanzarBot, negocio: NEGOCIO });
 
 app.get("/", (_req, res) => res.send("Bot de WhatsApp funcionando ✅"));

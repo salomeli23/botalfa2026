@@ -155,7 +155,7 @@ function crearPostgres(url) {
       q(`SELECT e AS nombre, COUNT(*)::int AS clientes FROM wa_contactos, unnest(etiquetas) AS e
          GROUP BY e ORDER BY clientes DESC, e`),
     contacto: (wa_id) => q(`SELECT * FROM wa_contactos WHERE wa_id = $1`, [wa_id]).then((r) => r[0] || null),
-    listarContactos({ buscar, pendientes, humano, etiqueta, limite = 50 } = {}) {
+    listarContactos({ buscar, pendientes, humano, etiqueta, limite = 50, recientes = false } = {}) {
       const cond = [];
       const params = [];
       if (buscar) { params.push(`%${buscar}%`); cond.push(`(nombre ILIKE $${params.length} OR wa_id LIKE $${params.length})`); }
@@ -165,7 +165,7 @@ function crearPostgres(url) {
       params.push(limite);
       return q(
         `SELECT * FROM wa_contactos ${cond.length ? "WHERE " + cond.join(" AND ") : ""}
-         ORDER BY pendiente_asesor DESC, ultimo_ts DESC LIMIT $${params.length}`,
+         ORDER BY ${recientes ? "" : "pendiente_asesor DESC, "}ultimo_ts DESC LIMIT $${params.length}`,
         params
       );
     },
@@ -249,14 +249,14 @@ function crearMemoria() {
         .sort((a, z) => z.clientes - a.clientes || a.nombre.localeCompare(z.nombre));
     },
     contacto: async (wa_id) => contactos.get(wa_id) || null,
-    async listarContactos({ buscar, pendientes, humano, etiqueta, limite = 50 } = {}) {
+    async listarContactos({ buscar, pendientes, humano, etiqueta, limite = 50, recientes = false } = {}) {
       const b = (buscar || "").toLowerCase();
       return [...contactos.values()]
         .filter((c) => !pendientes || c.pendiente_asesor)
         .filter((c) => !humano || c.bot_pausado)
         .filter((c) => !etiqueta || (c.etiquetas || []).includes(etiqueta))
         .filter((c) => !b || c.wa_id.includes(b) || (c.nombre || "").toLowerCase().includes(b))
-        .sort((a, z) => (z.pendiente_asesor - a.pendiente_asesor) || (z.ultimo_ts - a.ultimo_ts))
+        .sort((a, z) => (recientes ? 0 : z.pendiente_asesor - a.pendiente_asesor) || (z.ultimo_ts - a.ultimo_ts))
         .slice(0, limite);
     },
     async mensajes(wa_id, { limite = 50, antes } = {}) {

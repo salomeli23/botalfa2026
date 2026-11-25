@@ -1,7 +1,8 @@
 // Panel web de conversaciones: /panel (protegido con ADMIN_KEY)
 const path = require("path");
+const express = require("express");
 
-module.exports = function montarPanel(app, { historial, enviarManual, lanzarBot, adminOk, negocio }) {
+module.exports = function montarPanel(app, { historial, enviarManual, enviarImagen, lanzarBot, adminOk, negocio }) {
   const auth = (req, res, next) => (adminOk(req) ? next() : res.status(401).json({ error: "Clave incorrecta" }));
   const lim = (v, def, max = 300) => Math.min(Math.max(Number(v) || def, 1), max);
 
@@ -42,6 +43,7 @@ module.exports = function montarPanel(app, { historial, enviarManual, lanzarBot,
       humano: req.query.humano === "1",
       etiqueta: req.query.etiqueta || "",
       limite: lim(req.query.limite, 100),
+      recientes: true, // el panel muestra primero los chats más recientes
     });
     res.json((filas || []).map((c) => ({ ...c, ventana_abierta: historial.ventanaAbierta(c) })));
   });
@@ -62,6 +64,15 @@ module.exports = function montarPanel(app, { historial, enviarManual, lanzarBot,
     const { to, texto } = req.body || {};
     if (!to || !String(texto || "").trim()) return res.status(400).json({ error: "Faltan destinatario o texto" });
     const r = await enviarManual(String(to), String(texto), "panel", nombreAsesor(req));
+    if (!r.ok) return res.status(422).json({ error: errorMeta(r.error) });
+    res.json(r);
+  });
+
+  // Imagen desde el panel: el cuerpo es el archivo (image/jpeg o image/png); destino y texto van en la URL
+  app.post("/panel/api/enviar-imagen", auth, express.raw({ type: ["image/jpeg", "image/png"], limit: "5mb" }), async (req, res) => {
+    const to = String(req.query.to || "");
+    if (!to || !Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: "Falta el destinatario o la imagen (solo JPG o PNG de hasta 5 MB)" });
+    const r = await enviarImagen(to, req.body, req.get("content-type"), String(req.query.caption || "").slice(0, 1024), nombreAsesor(req));
     if (!r.ok) return res.status(422).json({ error: errorMeta(r.error) });
     res.json(r);
   });

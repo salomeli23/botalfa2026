@@ -32,6 +32,11 @@
   .c .u { color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
   .badge { font-size:11px; padding:1px 7px; border-radius:999px; background:var(--alert); color:#fff; font-weight:600 }
   .badge.humano { background:var(--botc) }
+  .c .n small.espera { color:var(--alert); font-weight:600 }
+  form#env .clip { padding:0 12px; font-size:18px }
+  #adjunto { display:flex; align-items:center; gap:10px; padding:8px 16px; background:var(--panel); border-top:1px solid var(--line); font-size:13px }
+  #adjunto img { height:56px; border-radius:6px; border:1px solid var(--line) }
+  #adjunto[hidden] { display:none }
   button.detener { border-color:var(--alert); color:var(--alert); font-weight:600 }
   button.reactivar { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600 }
   #aviso.humano { background:var(--bot); color:var(--botc) }
@@ -117,7 +122,10 @@
     </div>
     <div id="aviso" hidden></div>
     <div id="msgs"></div>
+    <div id="adjunto" hidden><img id="adjImg" alt=""><span id="adjInfo"></span><span class="sp" style="flex:1"></span><button type="button" id="adjQuitar">✕ Quitar</button></div>
     <form id="env" hidden>
+      <button type="button" class="clip" id="btnClip" title="Enviar imagen (JPG o PNG)">📎</button>
+      <input type="file" id="archivo" accept="image/*" hidden>
       <textarea id="texto" placeholder="Responder como asesor (llega desde el número del negocio)…"></textarea>
       <button class="primary" id="btnEnv">Enviar</button>
     </form>
@@ -128,6 +136,21 @@
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 const hora = (ts) => new Date(ts * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+// Tiempo desde el último mensaje: "ahora", "5 min", "3 h", "2 d"
+function hace(ts) {
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  if (s < 60) return "ahora";
+  if (s < 3600) return `${Math.floor(s / 60)} min`;
+  if (s < 86400) { const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return m && h < 6 ? `${h} h ${m} min` : `${h} h`; }
+  return `${Math.floor(s / 86400)} d`;
+}
+// El último mensaje es del cliente: está esperando respuesta
+const esperando = (c) => c.ultimo_entrante_ts && Number(c.ultimo_entrante_ts) >= Number(c.ultimo_ts);
+const tiempoLista = (c) => c.ultimo_ts
+  ? `<small class="${esperando(c) ? "espera" : ""}" data-ts="${c.ultimo_ts}" data-espera="${esperando(c) ? 1 : ""}" title="${hora(c.ultimo_ts)}">${textoHace(c.ultimo_ts, esperando(c))}</small>` : "";
+const textoHace = (ts, espera) => `${espera ? "⏳ " : ""}${hace(ts) === "ahora" ? "ahora" : "hace " + hace(ts)}`;
+// Refresca los tiempos cada 30 s sin recargar la lista
+setInterval(() => document.querySelectorAll("small[data-ts]").forEach((el) => { el.textContent = textoHace(Number(el.dataset.ts), !!el.dataset.espera); }), 30000);
 const ORIGEN = { cliente: "👤", bot: "🤖 bot", telefono: "📱 teléfono", panel: "💻 panel", claude: "✨ Claude" };
 const ESTADO = { sent: "✓", delivered: "✓✓", read: "✓✓ leído", failed: "⚠️ falló" };
 
@@ -217,7 +240,7 @@ async function cargarLista() {
   contactos = await api("/panel/api/contactos?" + p);
   $("#lista").innerHTML = contactos.map((c) => `
     <div class="c ${c.wa_id === actual ? "act" : ""}" data-id="${esc(c.wa_id)}">
-      <div class="n">${esc(nombre(c))} ${c.pendiente_asesor ? '<span class="badge">asesor</span>' : ""}${c.bot_pausado ? '<span class="badge humano" title="Bot detenido">👤 humano</span>' : ""}<small>${c.ultimo_ts ? hora(c.ultimo_ts) : ""}</small></div>
+      <div class="n">${esc(nombre(c))} ${c.pendiente_asesor ? '<span class="badge">asesor</span>' : ""}${c.bot_pausado ? '<span class="badge humano" title="Bot detenido">👤 humano</span>' : ""}${tiempoLista(c)}</div>
       <div class="u">${esc(c.ultimo_texto)}</div>
       ${c.etiquetas?.length ? `<div class="tags">${c.etiquetas.map((e) => chip(e)).join("")}</div>` : ""}
       <div class="ojo" data-ojo="${esc(c.wa_id)}">${textoOjo(c.wa_id)}</div>
@@ -263,6 +286,7 @@ async function guardarEtiquetas(lista) {
 const programarLista = () => { clearTimeout(recargaLista); recargaLista = setTimeout(cargarLista, 300); };
 
 async function abrir(wa_id) {
+  if (wa_id !== actual) quitarImagen();
   actual = wa_id;
   $("#izq").classList.add("oculto"); $("#der").classList.remove("oculto");
   document.querySelectorAll(".c").forEach((el) => el.classList.toggle("act", el.dataset.id === wa_id));
@@ -294,6 +318,7 @@ async function cargarConversacion() {
   $("#aviso").hidden = !aviso.length;
   $("#aviso").innerHTML = aviso.map(esc).join("<br>");
   $("#env").hidden = !c?.ventana_abierta;
+  if (!c?.ventana_abierta) quitarImagen();
   $("#msgs").innerHTML = mensajes.map((m) => `
     <div class="m ${m.direccion === "saliente" ? "out" : ""} ${m.origen}"><div class="tx">${esc(m.texto)}</div><div class="meta">${m.origen !== "cliente" ? `<span class="o ${m.origen}">${m.origen === "panel" && m.asesor ? `💻 ${esc(m.asesor)}` : ORIGEN[m.origen] || m.origen}</span>` : ""}
       <span>${hora(m.ts)}</span>${m.estado ? `<span class="${m.estado === "failed" ? "err" : ""}">${ESTADO[m.estado] || m.estado}</span>` : ""}</div>
@@ -349,9 +374,56 @@ $("#buscar").addEventListener("input", programarLista);
 $("#pend").addEventListener("change", cargarLista);
 $("#humano").addEventListener("change", cargarLista);
 $("#texto").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#env").requestSubmit(); } });
+// ---- Imágenes ----
+let imagen = null; // { blob, tipo }
+$("#btnClip").addEventListener("click", () => $("#archivo").click());
+$("#adjQuitar").addEventListener("click", () => quitarImagen());
+function quitarImagen() { imagen = null; $("#archivo").value = ""; $("#adjunto").hidden = true; $("#adjImg").removeAttribute("src"); }
+// Meta acepta JPG o PNG de hasta 5 MB: otras imágenes o las muy grandes se convierten a JPG
+async function prepararImagen(f) {
+  if ((f.type === "image/jpeg" || f.type === "image/png") && f.size <= 4.5 * 1024 * 1024) return { blob: f, tipo: f.type };
+  const bmp = await createImageBitmap(f);
+  const k = Math.min(1, 2000 / Math.max(bmp.width, bmp.height));
+  const cv = document.createElement("canvas");
+  cv.width = Math.round(bmp.width * k); cv.height = Math.round(bmp.height * k);
+  cv.getContext("2d").drawImage(bmp, 0, 0, cv.width, cv.height);
+  const blob = await new Promise((r) => cv.toBlob(r, "image/jpeg", 0.85));
+  return { blob, tipo: "image/jpeg" };
+}
+async function elegirImagen(f) {
+  if (!f || !f.type.startsWith("image/")) return;
+  try { imagen = await prepararImagen(f); }
+  catch { quitarImagen(); return alert("No se pudo leer la imagen. Usa un archivo JPG o PNG."); }
+  $("#adjImg").src = URL.createObjectURL(imagen.blob);
+  $("#adjInfo").textContent = `${f.name} · ${(imagen.blob.size / 1024 / 1024).toFixed(1)} MB — el texto que escribas irá como pie de foto`;
+  $("#adjunto").hidden = false;
+  $("#texto").focus();
+}
+$("#archivo").addEventListener("change", (e) => elegirImagen(e.target.files[0]));
+// También se puede pegar una imagen (Ctrl+V) en el cuadro de texto
+$("#texto").addEventListener("paste", (e) => {
+  const f = [...(e.clipboardData?.files || [])].find((x) => x.type.startsWith("image/"));
+  if (f) { e.preventDefault(); elegirImagen(f); }
+});
+async function enviarImagenActual(caption) {
+  const r = await fetch(`/panel/api/enviar-imagen?${new URLSearchParams({ to: actual, caption })}`, {
+    method: "POST", body: imagen.blob,
+    headers: { "Content-Type": imagen.tipo, "x-admin-key": KEY, "x-asesor": encodeURIComponent(ASESOR) } });
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 413) throw new Error("La imagen pesa más de 5 MB.");
+  if (!r.ok) throw new Error(j.error || r.statusText);
+}
+
 $("#env").addEventListener("submit", async (e) => {
   e.preventDefault();
   const texto = $("#texto").value.trim();
+  if (imagen && actual) {
+    $("#btnEnv").disabled = true;
+    try { await enviarImagenActual(texto); $("#texto").value = ""; quitarImagen(); }
+    catch (err) { alert(err.message); }
+    finally { $("#btnEnv").disabled = false; }
+    return;
+  }
   if (!texto || !actual) return;
   $("#btnEnv").disabled = true;
   try { await api("/panel/api/enviar", { method: "POST", body: JSON.stringify({ to: actual, texto }) }); $("#texto").value = ""; }

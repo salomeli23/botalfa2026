@@ -7,7 +7,11 @@ const { z } = require("zod");
 const { errorMeta } = require("./panel");
 
 const iso = (ts) => (ts ? new Date(Number(ts) * 1000).toISOString() : null);
-const soloDigitos = (s) => String(s || "").replace(/\D/g, "");
+// Número de teléfono (solo dígitos) o BSUID de un cliente con @usuario (ej. "CO.1349120865")
+const soloDigitos = (s) => {
+  const t = String(s || "").trim();
+  return /^[A-Za-z]{2}\.[A-Za-z0-9.]+$/.test(t) ? t.slice(0, 2).toUpperCase() + t.slice(2) : t.replace(/\D/g, "");
+};
 
 function claveValida(req) {
   const { MCP_KEY } = process.env;
@@ -55,7 +59,7 @@ function crearServidor({ historial, enviarManual, lanzarBot, negocio }) {
     title: "Leer conversación",
     description: 'Mensajes con un cliente, del más antiguo al más reciente. "de" indica quién escribió: cliente, bot, telefono (el dueño desde la app), panel o claude.',
     inputSchema: {
-      numero: z.string().describe("Número del cliente, ej. 573001234567"),
+      numero: z.string().describe("Número del cliente, ej. 573001234567 (o su ID si tiene @usuario, ej. CO.1349...)"),
       limite: z.number().int().min(1).max(200).optional().describe("Por defecto 40"),
     },
     annotations: { readOnlyHint: true },
@@ -86,7 +90,7 @@ function crearServidor({ historial, enviarManual, lanzarBot, negocio }) {
     title: "Enviar mensaje",
     description: `Envía un mensaje de texto a un cliente desde el número de WhatsApp de ${negocio} (aparece en el panel y en la app del celular). Solo funciona si el cliente escribió en las últimas 24 h. Confirma el texto con el usuario antes de enviarlo.`,
     inputSchema: {
-      numero: z.string().describe("Número del cliente, ej. 573001234567"),
+      numero: z.string().describe("Número del cliente, ej. 573001234567 (o su ID si tiene @usuario, ej. CO.1349...)"),
       texto: z.string().min(1).max(4096),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
@@ -112,7 +116,7 @@ function crearServidor({ historial, enviarManual, lanzarBot, negocio }) {
     title: "Modo humano (detener o reactivar el bot)",
     description: "Detiene el bot para un cliente para que lo atienda una persona (sus mensajes se siguen guardando, pero el bot no responde), o lo reactiva.",
     inputSchema: {
-      numero: z.string().describe("Número del cliente, ej. 573001234567"),
+      numero: z.string().describe("Número del cliente, ej. 573001234567 (o su ID si tiene @usuario, ej. CO.1349...)"),
       activar: z.boolean().describe("true = detener el bot (modo humano); false = reactivar el bot"),
     },
     annotations: { readOnlyHint: false, destructiveHint: false },
@@ -127,7 +131,7 @@ function crearServidor({ historial, enviarManual, lanzarBot, negocio }) {
   server.registerTool("lanzar_bot", {
     title: "Lanzar bot",
     description: "Reinicia la conversación del cliente y le envía el menú principal del bot (por si el bot no se activó solo). Si el cliente estaba en modo humano, reactiva el bot. Solo funciona dentro de la ventana de 24 h. Confirma con el usuario antes de usarlo.",
-    inputSchema: { numero: z.string().describe("Número del cliente, ej. 573001234567") },
+    inputSchema: { numero: z.string().describe("Número del cliente, ej. 573001234567 (o su ID si tiene @usuario, ej. CO.1349...)") },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
   }, async ({ numero }) => {
     const wa_id = soloDigitos(numero);
@@ -146,7 +150,7 @@ function crearServidor({ historial, enviarManual, lanzarBot, negocio }) {
     title: "Etiquetar cliente",
     description: "Agrega y/o quita etiquetas de un cliente para organizarlo (ej. Cotizado, Agendado, Cliente, Seguimiento). Reutiliza las etiquetas existentes de listar_etiquetas para no crear duplicados.",
     inputSchema: {
-      numero: z.string().describe("Número del cliente, ej. 573001234567"),
+      numero: z.string().describe("Número del cliente, ej. 573001234567 (o su ID si tiene @usuario, ej. CO.1349...)"),
       agregar: z.array(z.string()).optional().describe("Etiquetas a agregar"),
       quitar: z.array(z.string()).optional().describe("Etiquetas a quitar"),
     },

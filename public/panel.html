@@ -193,7 +193,10 @@ async function iniciar() {
   conectarEventos();
 }
 
-const nombre = (c) => c?.nombre || "+" + (c?.wa_id || "");
+// Clientes con @usuario sin número llegan con un ID de Meta (ej. "CO.1349...") en vez del teléfono
+const esId = (w) => /^[A-Z]{2}\./.test(w || "");
+const numero = (w) => (esId(w) ? "Sin número (usuario de WhatsApp)" : "+" + (w || ""));
+const nombre = (c) => c?.nombre || numero(c?.wa_id);
 
 async function cargarEtiquetas() {
   todasEtiquetas = await api("/panel/api/etiquetas");
@@ -273,7 +276,7 @@ async function cargarConversacion() {
   const { contacto: c, mensajes } = await api("/panel/api/mensajes?wa_id=" + encodeURIComponent(actual));
   $("#cab").innerHTML = `
     <button id="volver" title="Volver" style="padding:4px 10px">←</button>
-    <div><div class="t">${esc(nombre(c || { wa_id: actual }))}</div><small>+${esc(actual)}</small></div>
+    <div><div class="t">${esc(nombre(c || { wa_id: actual }))}</div><small title="${esc(actual)}">${esc(numero(actual))}</small></div>
     <span class="sp"></span>
     ${c?.ventana_abierta ? '<button id="lanzar" title="Envía el menú principal del bot a este cliente">🤖 Lanzar bot</button>' : ""}
     ${c?.bot_pausado

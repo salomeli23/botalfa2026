@@ -37,6 +37,19 @@ app.use(
 /*  Envio de mensajes                                                  */
 /* ------------------------------------------------------------------ */
 
+// Clientes con usuario de WhatsApp (@usuario) que no comparten su numero llegan con un
+// BSUID (ID de Meta, ej. "CO.13491208655302741918") en vez del telefono. Para responderles
+// Meta pide el campo "recipient" en lugar de "to".
+const esBSUID = (id) => /^[A-Z]{2}\.[A-Za-z0-9.]+$/.test(String(id || ""));
+function cuerpoEnvio(payload) {
+  const cuerpo = { messaging_product: "whatsapp", ...payload };
+  if (esBSUID(payload.to)) {
+    delete cuerpo.to;
+    cuerpo.recipient = payload.to;
+  }
+  return cuerpo;
+}
+
 // Envia y devuelve { ok, id, error }. Guarda en el historial quien lo envio
 // (origen: "bot" por defecto, "panel" o "claude" segun el contexto).
 async function sendMessageDetallado(payload) {
@@ -48,7 +61,7 @@ async function sendMessageDetallado(payload) {
         Authorization: `Bearer ${WHATSAPP_TOKEN}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ messaging_product: "whatsapp", ...payload }),
+      body: JSON.stringify(cuerpoEnvio(payload)),
       signal: AbortSignal.timeout(20000),
     });
   // Si la conexion con Meta se corta (ECONNRESET, "fetch failed") reintentamos:
@@ -1250,6 +1263,9 @@ async function handleIncoming(message) {
     return handleText(from, (message.text?.body || "").trim(), { anuncio: !!message.referral });
   }
 
+  // Reacciones (👍) y mensajes que WhatsApp no soporta: no se responde nada
+  if (message.type === "reaction" || message.type === "unsupported" || message.type === "system") return;
+
   // Imagenes, audios, etc.
   const s = getSession(from);
   if (s?.estado === "listo") {
@@ -1312,7 +1328,10 @@ app.post("/webhook", (req, res) => {
         // Lo que respondiste desde la app WhatsApp Business del celular (coexistencia).
         // Solo se guarda en el historial: el bot NO debe contestarle a esto.
         if (change.field === "smb_message_echoes") {
-          for (const eco of value.message_echoes || []) historial.registrarEco(eco, { phone_id: phoneId });
+          for (const eco of value.message_echoes || []) {
+            eco.to = eco.to || eco.to_user_id;
+            historial.registrarEco(eco, { phone_id: phoneId });
+          }
           continue;
         }
 
@@ -1328,8 +1347,18 @@ app.post("/webhook", (req, res) => {
           continue;
         }
 
-        const nombres = Object.fromEntries((value.contacts || []).map((c) => [c.wa_id, c.profile?.name]));
+        // Clientes con @usuario pueden llegar sin telefono: se identifican por su BSUID (user_id)
+        const nombres = {};
+        for (const c of value.contacts || []) {
+          const n = c.profile?.name || (c.profile?.username ? "@" + c.profile.username : undefined);
+          for (const k of [c.wa_id, c.user_id]) if (k) nombres[k] = n;
+        }
         for (const message of messages) {
+          message.from = message.from || message.from_user_id;
+          if (!message.from) {
+            console.error("Mensaje sin remitente (ni telefono ni BSUID):", JSON.stringify(message).slice(0, 300));
+            continue;
+          }
           console.log("Mensaje recibido de", message.from, "tipo:", message.type);
           historial.registrarEntrante(message, { nombre: nombres[message.from], phone_id: phoneId });
           contexto.run({ phoneId }, async () => {

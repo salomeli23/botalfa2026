@@ -1176,19 +1176,65 @@ function esSaludo(texto) {
   return PIDE_INFO.test(n) && n.length <= 120;
 }
 
+// Palabras clave en texto libre -> servicio del menu (para no repetir el menu completo)
+const SERVICIO_POR_PALABRA = [
+  [/\b(antiatraco|anti atraco|antirrobo|antirobo|anti robo|pelicula de seguridad)\b/, "servicio_3"],
+  [/\b(ppf|full ppf|proteccion de pintura|piano black|acrilic|pelicula de pintura)\b/, "servicio_2"],
+  [/\b(arquitectonico|edificio|oficina|casa|apartamento|ventana|ventanal|local|vidrio de casa)\b/, "servicio_4"],
+  [/\b(detailing|detallado|lavado|ceramico de pintura|tapiceria|limpieza)\b/, "servicio_5"],
+  [/\b(polarizado|polarizar|polarizada|polarizados|papel ahumado)\b/, "servicio_1"],
+];
+const servicioPorTexto = (texto) => {
+  const n = normalizarSaludo(texto);
+  return SERVICIO_POR_PALABRA.find(([re]) => re.test(n))?.[1] || null;
+};
+
+// ¿Un asesor (celular o panel) le escribio al cliente en las ultimas horas, despues de que el cliente
+// escribiera? El saludo del anuncio llega antes del primer mensaje del cliente, asi que no cuenta.
+const HUMANO_ACTIVO_MS = 12 * 60 * 60 * 1000;
+async function asesorActivo(from) {
+  const ms = (await historial.mensajes(from, { limite: 40 })) || [];
+  const limite = (Date.now() - HUMANO_ACTIVO_MS) / 1000;
+  let clienteAntes = false;
+  for (const m of [...ms].sort((a, z) => a.ts - z.ts)) {
+    if (m.origen === "cliente") clienteAntes = true;
+    else if (clienteAntes && ["telefono", "panel", "claude"].includes(m.origen) && Number(m.ts) >= limite) return true;
+  }
+  return false;
+}
+
+// Envia el menu principal y recuerda cuando, para no repetirlo si el cliente sigue escribiendo
+async function mostrarMenu(from) {
+  sessions.delete(from);
+  setSession(from, { estado: "menu", menuTs: Date.now() });
+  return sendMainMenu(from);
+}
+const MENU_RECIENTE_MS = 15 * 60 * 1000;
+
 async function handleText(from, texto, { anuncio = false } = {}) {
   // Escribio (aunque salude primero) que quiere hablar con un asesor / una persona
   if (PIDE_ASESOR.test(normalizarSaludo(texto)) && texto.length <= 120) {
     return pasarAAsesor(from, `Escribió: ${texto.slice(0, 200)}`, { pidioAsesor: true });
   }
 
-  // Un saludo, "menu" o un mensaje que llega desde un anuncio siempre reinicia
-  if (anuncio || esSaludo(texto)) {
-    sessions.delete(from);
-    return sendMainMenu(from);
+  const pideMenu = /^(menu|inicio|empezar|comenzar)$/.test(normalizarSaludo(texto));
+  const s = getSession(from);
+
+  // Si un asesor ya esta conversando con el cliente (desde el celular o el panel), el bot no se mete,
+  // salvo que el cliente escriba "menu" o llegue de nuevo desde un anuncio.
+  if (!pideMenu && !anuncio && (!s || s.estado === "menu" || s.estado === "listo") && (await asesorActivo(from))) {
+    console.log(`Asesor activo con ${from}: el bot no responde a "${texto.slice(0, 60)}"`);
+    return;
   }
 
-  const s = getSession(from);
+  // Un saludo, "menu" o un mensaje que llega desde un anuncio reinicia el bot.
+  // Si ademas menciona un servicio ("info del PPF"), va directo a ese servicio.
+  if (anuncio || esSaludo(texto)) {
+    const servicio = !pideMenu && servicioPorTexto(texto);
+    if (servicio) { sessions.delete(from); return responderServicio(from, servicio); }
+    if (s?.estado === "menu" && Date.now() - s.menuTs < MENU_RECIENTE_MS && !pideMenu) return; // ya lo tiene en pantalla
+    return mostrarMenu(from);
+  }
 
   // Viendo el menu PPF: un numero del 1 al 4 elige la opcion; cualquier otro texto pasa a un asesor
   if (s?.estado === "ppf") {
@@ -1245,9 +1291,20 @@ async function handleText(from, texto, { anuncio = false } = {}) {
     return;
   }
 
-  // Sin conversacion activa: numero del 1 al 5 = opcion del menu; otro texto = menu
+  // Sin conversacion activa: numero del 1 al 5 = opcion del menu
   if (/^[1-5]$/.test(texto)) return responderServicio(from, `servicio_${texto}`);
-  return sendMainMenu(from);
+
+  // Texto libre que menciona un servicio ("precio del polarizado") -> directo a ese servicio
+  const servicio = servicioPorTexto(texto);
+  if (servicio) return responderServicio(from, servicio);
+
+  // Acaba de recibir el menu y sigue escribiendo: no se lo repetimos; un solo recordatorio corto
+  if (s?.estado === "menu" && Date.now() - s.menuTs < MENU_RECIENTE_MS) {
+    if (s.recordado) return;
+    setSession(from, { recordado: true });
+    return sendText(from, "👆 Toca *Ver servicios* en el mensaje anterior y elige el que te interesa, o escríbeme si es polarizado, PPF, antiatraco, arquitectónico o detailing.");
+  }
+  return mostrarMenu(from);
 }
 
 async function handleIncoming(message) {
